@@ -12,15 +12,12 @@ the command line.
     {"name": "STRIPE_SECRET_KEY", "label": "Secret key"},
     {"name": "STRIPE_WEBHOOK_SECRET", "label": "Webhook signing secret", "secret": "stripe-webhook"}
   ],
-  "destination": {
-    "store": {"type": "gcp_secret_manager", "project": "acme-prod"},
-    "path": ".env.local"
-  }
+  "destination": {"store": {"type": "gcp_secret_manager", "project": "acme-prod"}}
 }
 ```
 
-With `path` set, the file receives the references below instead of the values, so it's safe to commit
-or hand to an agent. Omit `path` to store only.
+`destination.store` only preticks this store on the page; the user can untick it or add other
+places. The receipt's `saved_to` entry for it carries the references below.
 
 | option | default | meaning |
 |---|---|---|

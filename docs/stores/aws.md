@@ -16,10 +16,7 @@ Secrets Manager:
     {"name": "STRIPE_SECRET_KEY", "label": "Secret key"},
     {"name": "STRIPE_WEBHOOK_SECRET", "label": "Webhook signing secret", "secret": "stripe/webhook"}
   ],
-  "destination": {
-    "store": {"type": "aws_secrets_manager", "region": "us-east-1"},
-    "path": ".env.local"
-  }
+  "destination": {"store": {"type": "aws_secrets_manager", "region": "us-east-1"}}
 }
 ```
 
@@ -32,15 +29,12 @@ Parameter Store:
   "fields": [
     {"name": "STRIPE_SECRET_KEY", "label": "Secret key", "secret": "/acme/prod/stripe-key"}
   ],
-  "destination": {
-    "store": {"type": "aws_parameter_store", "region": "us-east-1", "profile": "acme"},
-    "path": ".env.local"
-  }
+  "destination": {"store": {"type": "aws_parameter_store", "region": "us-east-1", "profile": "acme"}}
 }
 ```
 
-With `path` set, the file receives the references below instead of the values, so it's safe to commit
-or hand to an agent. Omit `path` to store only.
+`destination.store` only preticks this store on the page; the user can untick it or add other
+places. The receipt's `saved_to` entry for it carries the references below.
 
 | option | default | meaning |
 |---|---|---|

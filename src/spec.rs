@@ -11,6 +11,8 @@ pub struct Spec {
     #[serde(default)]
     pub reason: Option<String>,
     pub fields: Vec<Field>,
+    /// Where the agent suggests saving; the user makes the final choice on the page.
+    #[serde(default)]
     pub destination: Destination,
 }
 
@@ -23,7 +25,7 @@ pub struct Field {
     /// Dotted path inside JSON/TOML files; defaults to `name`.
     #[serde(default)]
     pub key: Option<String>,
-    /// Secret name in `destination.store`; defaults to `name`.
+    /// Name in secret stores; defaults to `name`.
     #[serde(default)]
     pub secret: Option<String>,
     #[serde(default)]
@@ -37,15 +39,15 @@ pub struct Field {
     pub help_url: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Destination {
-    /// File that receives the values, or only references to them when `store` is set.
+    /// File offered (and preselected) as a place to save the values.
     #[serde(default)]
     pub path: Option<PathBuf>,
     #[serde(default)]
     pub format: Option<Format>,
-    /// Cloud secret store that receives the values.
+    /// Secret store preselected on the page.
     #[serde(default)]
     pub store: Option<crate::stores::StoreSpec>,
 }
@@ -113,18 +115,12 @@ impl Spec {
         if self.fields.is_empty() || self.fields.len() > 20 {
             bail!("fields must have between 1 and 20 entries");
         }
-        if self.destination.path.is_none() && self.destination.store.is_none() {
-            bail!("destination needs a path, a store, or both");
-        }
         let format = self.file_format()?;
         let mut seen = HashSet::new();
         let mut seen_secret = HashSet::new();
         for f in &self.fields {
             if !seen.insert(f.key_path()) {
                 bail!("duplicate key {:?}", f.key_path());
-            }
-            if f.secret.is_some() && self.destination.store.is_none() {
-                bail!("field {:?}: `secret` only applies with destination.store", f.name);
             }
             if format == Some(Format::Dotenv) {
                 if f.key.is_some() {
@@ -136,7 +132,7 @@ impl Spec {
             } else if format.is_some() && f.key_path().split('.').any(str::is_empty) {
                 bail!("field {:?}: key path {:?} has an empty segment", f.name, f.key_path());
             }
-            if self.destination.store.is_some() && !seen_secret.insert(f.secret_name()) {
+            if !seen_secret.insert(f.secret_name()) {
                 bail!("duplicate secret name {:?}", f.secret_name());
             }
             if let Some(url) = &f.help_url
