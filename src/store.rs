@@ -1,6 +1,7 @@
-//! Writes values into the destination file and keeps it out of git.
+//! Saves the values: into a secret store (with references in the file), or into the file, kept out of git.
 
 use crate::spec::{Format, Spec};
+use crate::stores::SecretStore;
 use anyhow::{Context, Result, anyhow, bail};
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -16,10 +17,18 @@ pub enum GitStatus {
     AlreadyIgnored,
     /// Not ignored yet; `commit` will append it to the repo's .gitignore.
     WillIgnore,
+    /// The file only holds references to a secret store, so git is left alone.
+    References,
 }
 
-/// Everything checked before the user is asked for anything, so a failed write can't waste their input.
+/// Everything checked before the user is asked for anything, so a failure can't waste their input.
 pub struct Plan {
+    /// The values file, or the references file when `store` is set.
+    pub file: Option<FilePlan>,
+    pub store: Option<Box<dyn SecretStore>>,
+}
+
+pub struct FilePlan {
     pub path: PathBuf,
     pub format: Format,
     pub git: GitStatus,
@@ -28,8 +37,49 @@ pub struct Plan {
 }
 
 pub fn plan(spec: &Spec, cwd: &Path) -> Result<Plan> {
-    let format = spec.format()?;
-    let path = absolute(&cwd.join(&spec.destination.path))?;
+    let store = match &spec.destination.store {
+        Some(s) => {
+            let backend = s.backend();
+            let names: Vec<&str> = spec.fields.iter().map(|f| f.secret_name()).collect();
+            backend.preflight(&names)?;
+            Some(backend)
+        }
+        None => None,
+    };
+    let file = match (&spec.destination.path, spec.file_format()?) {
+        (Some(path), Some(format)) => Some(plan_file(path, format, cwd, store.is_none())?),
+        _ => None,
+    };
+    Ok(Plan { file, store })
+}
+
+/// Saves `values` (field name -> value) and returns field name -> store reference (empty without a store).
+pub fn commit(spec: &Spec, plan: &Plan, values: &BTreeMap<String, String>) -> Result<BTreeMap<String, String>> {
+    let mut references = BTreeMap::new();
+    if let Some(store) = &plan.store {
+        for f in spec.fields.iter().filter(|f| values.contains_key(&f.name)) {
+            let reference = store.put(f.secret_name(), &values[&f.name]).with_context(|| {
+                let done: Vec<&str> = references.keys().map(String::as_str).collect();
+                match done.is_empty() {
+                    true => format!("storing {}", f.name),
+                    false => format!("storing {} (already stored: {})", f.name, done.join(", ")),
+                }
+            })?;
+            references.insert(f.name.clone(), reference);
+        }
+    }
+    if let Some(file) = &plan.file {
+        let source = if plan.store.is_some() { &references } else { values };
+        let pairs: Vec<(&str, &str)> =
+            spec.fields.iter().filter_map(|f| source.get(&f.name).map(|v| (f.key_path(), v.as_str()))).collect();
+        write_file(file, &pairs)?;
+    }
+    Ok(references)
+}
+
+/// `secret` files are refused if tracked by git and gitignored if not; reference files are left alone.
+fn plan_file(path: &Path, format: Format, cwd: &Path, secret: bool) -> Result<FilePlan> {
+    let path = absolute(&cwd.join(path))?;
     if path.is_dir() {
         bail!("destination {} is a directory", path.display());
     }
@@ -41,18 +91,17 @@ pub fn plan(spec: &Spec, cwd: &Path) -> Result<Plan> {
     // Parse now so a malformed file fails before the prompt opens.
     apply(format, &existing, &[]).with_context(|| format!("{} isn't valid {}", path.display(), format.as_str()))?;
 
-    let (repo_root, git) = git_status(&path)?;
-    Ok(Plan { path, format, git, repo_root, existing })
+    let (repo_root, git) = if secret { git_status(&path)? } else { (None, GitStatus::References) };
+    Ok(FilePlan { path, format, git, repo_root, existing })
 }
 
-/// Writes `values` (key path -> value) to the destination, ignoring it in git first if needed.
-pub fn commit(plan: &Plan, values: &BTreeMap<String, String>) -> Result<()> {
+/// Writes `pairs` (key path -> value) to the file, ignoring it in git first if needed.
+fn write_file(plan: &FilePlan, pairs: &[(&str, &str)]) -> Result<()> {
     if plan.git == GitStatus::WillIgnore {
         let root = plan.repo_root.as_ref().expect("WillIgnore implies a repo");
         add_to_gitignore(root, &plan.path)?;
     }
-    let pairs: Vec<(&str, &str)> = values.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-    let out = apply(plan.format, &plan.existing, &pairs)?;
+    let out = apply(plan.format, &plan.existing, pairs)?;
     if let Some(dir) = plan.path.parent() {
         fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }

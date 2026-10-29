@@ -2,7 +2,7 @@
 
 use crate::seal::{Opener, Sealed};
 use crate::spec::Spec;
-use crate::store::{self, Plan};
+use crate::store::{self, GitStatus, Plan};
 use crate::transport::{Exposure, TUNNEL_NOTE, Via};
 use anyhow::{Result, anyhow};
 use serde::Deserialize;
@@ -16,8 +16,8 @@ const FORM: &str = include_str!("form.html");
 const MAX_BODY: u64 = 64 * 1024;
 
 pub enum Outcome {
-    /// Field names that were written.
-    Saved(Vec<String>),
+    /// Field names that were saved, and field name -> store reference.
+    Saved(Vec<String>, BTreeMap<String, String>),
     Cancelled,
     TimedOut,
 }
@@ -92,12 +92,11 @@ pub fn serve(
                         continue;
                     }
                 };
-                let by_key = values.iter().map(|(name, v)| (key_of(spec, name), v.clone())).collect();
-                match store::commit(plan, &by_key) {
-                    Ok(()) => {
+                match store::commit(spec, plan, &values) {
+                    Ok(references) => {
                         let names: Vec<String> = values.into_keys().collect();
                         respond_json(req, 200, json!({"saved": names}));
-                        return Ok(Outcome::Saved(names));
+                        return Ok(Outcome::Saved(names, references));
                     }
                     Err(e) => {
                         respond_json(req, 500, json!({"error": format!("{e:#}")}));
@@ -140,21 +139,37 @@ fn collect(spec: &Spec, s: Submission) -> Result<BTreeMap<String, String>> {
     Ok(out)
 }
 
-fn key_of(spec: &Spec, name: &str) -> String {
-    spec.fields.iter().find(|f| f.name == name).map(|f| f.key_path().to_string()).unwrap_or_default()
+/// The "Saves to" block: (lead, where, note).
+fn destination(plan: &Plan) -> serde_json::Value {
+    let file = plan.file.as_ref().map(|f| tilde(&f.path.display().to_string()));
+    match (&plan.store, &plan.file) {
+        (Some(store), _) => {
+            let (service, location) = store.describe();
+            let note = file.map(|p| format!("{p} gets references to these secrets, not the values."));
+            json!({"lead": format!("Saves to {service}"), "location": location, "note": note})
+        }
+        (None, Some(f)) => {
+            let note = match f.git {
+                GitStatus::AlreadyIgnored => "Already ignored by git.",
+                GitStatus::WillIgnore => "Will be added to .gitignore so it is never committed.",
+                GitStatus::NotInRepo => "Not inside a git repository.",
+                GitStatus::References => "",
+            };
+            json!({"lead": format!("Saves to this {} file", f.format.as_str()), "location": file, "note": note})
+        }
+        (None, None) => unreachable!("specs need a path or a store"),
+    }
 }
 
 fn render(spec: &Spec, plan: &Plan, exposure: &Exposure, nonce: &str) -> String {
     let data = json!({
         "title": spec.title,
         "reason": spec.reason,
-        "path": tilde(&plan.path.display().to_string()),
-        "format": plan.format.as_str(),
-        "git": plan.git,
+        "dest": destination(plan),
         "encrypt": exposure.encrypt,
         "note": (exposure.via == Via::Tunnel).then_some(TUNNEL_NOTE),
         "fields": spec.fields.iter().map(|f| json!({
-            "name": f.name, "label": f.label, "optional": f.optional,
+            "name": f.name, "tag": if plan.store.is_some() { f.secret_name() } else { &f.name }, "label": f.label, "optional": f.optional,
             "placeholder": f.placeholder, "pattern": f.pattern, "help_url": f.help_url,
         })).collect::<Vec<_>>(),
     });
