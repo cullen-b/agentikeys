@@ -79,7 +79,11 @@ impl Places {
             && !offers.iter().any(|o| o.kind == s.kind())
         {
             let service = s.backend().describe().0;
-            offers.push(Offer::unavailable(s.kind(), service, "Its command-line tool isn't installed on this computer"));
+            offers.push(Offer::unavailable(
+                s.kind(),
+                service,
+                "Its command-line tool isn't installed on this computer",
+            ));
         }
         let places = Places { file, offers };
         if places.file.is_none() && places.offers.iter().all(|o| places.view(spec, o).problem.is_some()) {
@@ -151,13 +155,18 @@ impl Places {
                 self.file.as_ref().ok_or_else(|| anyhow!("There's no file to save to."))?;
                 continue;
             }
-            let offer = self.offers.iter().find(|o| o.kind == pick.id).ok_or_else(|| anyhow!("Unknown place {}.", pick.id))?;
+            let offer =
+                self.offers.iter().find(|o| o.kind == pick.id).ok_or_else(|| anyhow!("Unknown place {}.", pick.id))?;
             let view = self.view(spec, offer);
             if let Some(problem) = &view.problem {
                 bail!("{}: {problem}", offer.service);
             }
             if offer.choice_label.is_some() && !pick.choice.as_ref().is_some_and(|c| view.choices.contains(c)) {
-                bail!("Pick one of the listed {}s for {}.", offer.choice_label.unwrap_or("target").to_lowercase(), offer.service);
+                bail!(
+                    "Pick one of the listed {}s for {}.",
+                    offer.choice_label.unwrap_or("target").to_lowercase(),
+                    offer.service
+                );
             }
             let chosen = StoreSpec::chosen(&pick.id, pick.choice.as_deref(), spec.destination.store.as_ref())
                 .ok_or_else(|| anyhow!("Unknown place {}.", pick.id))?;
@@ -168,7 +177,8 @@ impl Places {
             stores.push((pick, backend));
         }
 
-        let keys: Vec<String> = spec.fields.iter().filter(|f| values.contains_key(&f.name)).map(|f| f.name.clone()).collect();
+        let keys: Vec<String> =
+            spec.fields.iter().filter(|f| values.contains_key(&f.name)).map(|f| f.name.clone()).collect();
         let mut outcome = Outcome { saved: Vec::new(), failed: Vec::new() };
         for (pick, backend) in &stores {
             let (service, location) = backend.describe();
@@ -237,7 +247,8 @@ mod tests {
     use super::*;
 
     fn spec(destination: &str) -> Spec {
-        Spec::parse(&format!(r#"{{"title":"t","fields":[{{"name":"STRIPE_KEY"}}],"destination":{destination}}}"#)).unwrap()
+        Spec::parse(&format!(r#"{{"title":"t","fields":[{{"name":"STRIPE_KEY"}}],"destination":{destination}}}"#))
+            .unwrap()
     }
 
     fn vault_offer(choices: &[&str]) -> Offer {

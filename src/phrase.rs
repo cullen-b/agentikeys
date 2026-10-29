@@ -19,8 +19,8 @@ const NOUNS: [&str; 64] = [
     "otter", "falcon", "maple", "harbor", "comet", "cedar", "badger", "canyon", "dolphin", "ember", "fern", "glacier",
     "heron", "island", "jaguar", "kettle", "lantern", "meadow", "nectar", "orchid", "panda", "quartz", "raven",
     "river", "saddle", "tiger", "tulip", "valley", "walrus", "willow", "yak", "zebra", "acorn", "beacon", "bison",
-    "cactus", "dune", "eagle", "fjord", "gecko", "hazel", "iris", "koala", "lagoon", "lynx", "magnet", "nebula",
-    "oak", "pebble", "puffin", "reef", "sparrow", "summit", "thistle", "tundra", "violet", "wren", "anchor", "basil",
+    "cactus", "dune", "eagle", "fjord", "gecko", "hazel", "iris", "koala", "lagoon", "lynx", "magnet", "nebula", "oak",
+    "pebble", "puffin", "reef", "sparrow", "summit", "thistle", "tundra", "violet", "wren", "anchor", "basil",
     "cobalt", "delta", "garnet", "marble", "pine",
 ];
 

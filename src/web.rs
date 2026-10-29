@@ -1,9 +1,8 @@
 //! One-shot page that collects the values, behind a random token. `transport` decides where it listens.
 
+use crate::save::{Pick, Places, SavedTo, Secrets};
 use crate::seal::{Opener, Sealed, ViewKey};
 use crate::spec::Spec;
-use crate::save::{Pick, Places, SavedTo, Secrets};
-use zeroize::Zeroize;
 use crate::transport::{Exposure, TUNNEL_NOTE, Via};
 use anyhow::{Result, anyhow};
 use serde::Deserialize;
@@ -11,6 +10,7 @@ use serde_json::json;
 use std::io::Read;
 use std::time::{Duration, Instant};
 use tiny_http::{Header, Method, Request, Response, Server};
+use zeroize::Zeroize;
 
 const FORM: &str = include_str!("form.html");
 // Room for uploaded key files (the page caps each at 256 KB) after encryption and base64.
@@ -150,7 +150,9 @@ fn unseal(body: Body, opener: Option<&Opener>, aad: &[u8]) -> Result<Submission>
             Ok(parsed?)
         }
         (Body::Plain(s), None) => Ok(s),
-        (Body::Plain(_), Some(_)) => Err(anyhow!("values must be encrypted on this link; reload the page and try again")),
+        (Body::Plain(_), Some(_)) => {
+            Err(anyhow!("values must be encrypted on this link; reload the page and try again"))
+        }
         (Body::Sealed { .. }, None) => Err(anyhow!("unexpected encrypted submission")),
     }
 }

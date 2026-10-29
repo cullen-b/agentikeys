@@ -5,7 +5,8 @@ use anyhow::{Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const START: &str = "<!-- agentikeys:start (managed by `agentikeys setup`; `agentikeys setup --uninstall` removes it) -->";
+const START: &str =
+    "<!-- agentikeys:start (managed by `agentikeys setup`; `agentikeys setup --uninstall` removes it) -->";
 const END: &str = "<!-- agentikeys:end -->";
 
 /// What agents are told. Kept short: some harnesses cap global rules (Windsurf: 6,000 characters).
@@ -211,7 +212,10 @@ mod tests {
         fs::write(&file, format!("intro\n\n{START}\nold text\n{END}\n\nmore rules\n")).unwrap();
         assert_eq!(run(&h, Action::Install, false).unwrap()[0].change, Change::Updated);
         let text = fs::read_to_string(&file).unwrap();
-        assert!(text.starts_with("intro\n\n<!-- agentikeys:start") && text.ends_with("<!-- agentikeys:end -->\n\nmore rules\n"));
+        assert!(
+            text.starts_with("intro\n\n<!-- agentikeys:start")
+                && text.ends_with("<!-- agentikeys:end -->\n\nmore rules\n")
+        );
         assert!(!text.contains("old text"));
 
         assert_eq!(run(&h, Action::Uninstall, false).unwrap()[0].change, Change::Removed);

@@ -58,7 +58,8 @@ pub fn read(n: usize, key: Option<&str>) -> Result<Vec<Entry>> {
 
 /// One line for people: when, outcome, keys, where they went, and which request asked.
 pub fn describe(e: &Entry) -> String {
-    let places: Vec<String> = e.saved_to.iter().map(|s| format!("{} {}", s.kind.replace('_', " "), s.location)).collect();
+    let places: Vec<String> =
+        e.saved_to.iter().map(|s| format!("{} {}", s.kind.replace('_', " "), s.location)).collect();
     let to = if places.is_empty() { String::new() } else { format!(" -> {}", places.join(", ")) };
     format!("{}  {:<9} {}{}  ({}, in {})", e.time, e.status, e.keys.join(", "), to, e.title, e.cwd)
 }

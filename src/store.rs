@@ -88,11 +88,8 @@ fn apply(format: Format, existing: &str, pairs: &[(&str, &str)]) -> Result<Strin
 
 fn json_upsert(existing: &str, pairs: &[(&str, &str)]) -> Result<String> {
     use serde_json::{Map, Value};
-    let mut root: Value = if existing.trim().is_empty() {
-        Value::Object(Map::new())
-    } else {
-        serde_json::from_str(existing)?
-    };
+    let mut root: Value =
+        if existing.trim().is_empty() { Value::Object(Map::new()) } else { serde_json::from_str(existing)? };
     if !root.is_object() {
         bail!("top level is not an object");
     }
@@ -151,7 +148,9 @@ fn git_status(path: &Path) -> Result<(Option<PathBuf>, GitStatus)> {
     };
     let rel = path.strip_prefix(&root).unwrap_or(path).to_string_lossy().to_string();
     if git(&root, &["ls-files", "--error-unmatch", "--", &rel]).is_some() {
-        bail!("{rel} is tracked by git; refusing to write secrets into a committed file. Pick an untracked file such as .env.local");
+        bail!(
+            "{rel} is tracked by git; refusing to write secrets into a committed file. Pick an untracked file such as .env.local"
+        );
     }
     let status = if git(&root, &["check-ignore", "-q", "--", &rel]).is_some() {
         GitStatus::AlreadyIgnored

@@ -20,7 +20,8 @@ use std::process::{Command, ExitCode, Stdio};
 use std::time::{Duration, Instant};
 use transport::Via;
 
-/// Collect secrets from the user in a browser page and write them to a file, without the agent seeing them.
+/// Let AI coding agents ask for API keys without the keys ever passing through the chat: the user enters them in a
+/// one-shot browser page and picks where they are saved.
 #[derive(Parser)]
 #[command(version)]
 struct Cli {
@@ -149,7 +150,8 @@ impl Receipt {
 fn main() -> ExitCode {
     let receipt = match Cli::parse().command {
         Cmd::Request { spec, via, timeout, no_open, foreground, receipt } => {
-            let r = request(&spec, via, timeout, no_open, foreground, receipt.as_deref()).unwrap_or_else(Receipt::error);
+            let r =
+                request(&spec, via, timeout, no_open, foreground, receipt.as_deref()).unwrap_or_else(Receipt::error);
             if let Some(path) = &receipt {
                 let _ = write_receipt(path, &r);
             }
@@ -209,22 +211,35 @@ fn run_setup(dry_run: bool, uninstall: bool, print: bool) -> Result<()> {
         return Ok(());
     }
     if home.join(".cursor").is_dir() {
-        println!("  {:<15} has no settings file for this: paste `agentikeys setup --print` into Settings > Rules", "Cursor");
+        println!(
+            "  {:<15} has no settings file for this: paste `agentikeys setup --print` into Settings > Rules",
+            "Cursor"
+        );
     }
     if which("agentikeys").is_none() {
-        println!("\nNote: `agentikeys` isn't on your PATH, so agents can't run it yet. Install it with `cargo install --path .` or put the binary on your PATH.");
+        println!(
+            "\nNote: `agentikeys` isn't on your PATH, so agents can't run it yet. Install it with `cargo install --path .` or put the binary on your PATH."
+        );
     }
     println!();
     if which("tailscale").is_some() {
-        println!("Working with agents from another device? Run `agentikeys config via tailscale` so key pages reach you over your tailnet.");
+        println!(
+            "Working with agents from another device? Run `agentikeys config via tailscale` so key pages reach you over your tailnet."
+        );
     } else {
-        println!("Working with agents from another device? Tailscale is the recommended way to reach key pages privately: https://tailscale.com/download");
+        println!(
+            "Working with agents from another device? Tailscale is the recommended way to reach key pages privately: https://tailscale.com/download"
+        );
     }
     if std::io::stdout().is_terminal() && !dry_run {
         let (phrase, _) = phrase::get_or_create()?;
-        println!("Your security phrase is {phrase}. Every real agentikeys page shows it; never enter keys on a page that doesn't.");
+        println!(
+            "Your security phrase is {phrase}. Every real agentikeys page shows it; never enter keys on a page that doesn't."
+        );
     } else {
-        println!("Run `agentikeys phrase` yourself to see your security phrase, which every real agentikeys page shows.");
+        println!(
+            "Run `agentikeys phrase` yourself to see your security phrase, which every real agentikeys page shows."
+        );
     }
     Ok(())
 }
@@ -248,7 +263,9 @@ fn show_log(n: usize, key: Option<&str>, json: bool) -> Result<()> {
 fn show_phrase(reset: bool) -> Result<()> {
     use std::io::IsTerminal;
     if !std::io::stdout().is_terminal() {
-        bail!("the security phrase is only shown in an interactive terminal, so it never reaches an agent; run `agentikeys phrase` yourself");
+        bail!(
+            "the security phrase is only shown in an interactive terminal, so it never reaches an agent; run `agentikeys phrase` yourself"
+        );
     }
     let phrase = if reset { phrase::reset()? } else { phrase::get_or_create()?.0 };
     println!("Your agentikeys security phrase: {phrase}");
@@ -296,11 +313,18 @@ fn request(
         let opened = via == Via::Local && !no_open && open_browser(url);
         eprintln!(
             "agentikeys: {} {url}",
-            if opened { "opened this page in the browser on this machine:" } else { "open this link to enter the values:" }
+            if opened {
+                "opened this page in the browser on this machine:"
+            } else {
+                "open this link to enter the values:"
+            }
         );
         if let Some(path) = receipt {
             let note = (via == Via::Tunnel).then(|| transport::TUNNEL_NOTE.to_string());
-            let _ = write_receipt(path, &Receipt { url: Some(url.into()), via: Some(via), note, ..Receipt::status("pending") });
+            let _ = write_receipt(
+                path,
+                &Receipt { url: Some(url.into()), via: Some(via), note, ..Receipt::status("pending") },
+            );
         }
     })?;
     if via == Via::Tunnel {
@@ -393,7 +417,8 @@ fn config_path() -> Result<PathBuf> {
 
 fn configured_via() -> Result<Via> {
     if let Ok(v) = std::env::var("AGENTIKEYS_VIA") {
-        return Via::from_str(&v, true).map_err(|_| anyhow::anyhow!("AGENTIKEYS_VIA={v} isn't auto, local, tailscale or tunnel"));
+        return Via::from_str(&v, true)
+            .map_err(|_| anyhow::anyhow!("AGENTIKEYS_VIA={v} isn't auto, local, tailscale or tunnel"));
     }
     let path = config_path()?;
     let Ok(text) = fs::read_to_string(&path) else { return Ok(Via::Auto) };
