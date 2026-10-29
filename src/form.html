@@ -41,6 +41,7 @@ main {
 }
 .phrase-intro { font-size: 13px; background: var(--dest); border-radius: 8px; padding: 10px 12px; margin: 0 0 18px; }
 .phrase-intro strong { font-family: var(--mono); }
+.banner code { font-family: var(--mono); font-size: 13px; }
 h1 { text-wrap: balance; font-size: 22px; line-height: 1.25; font-weight: 650; letter-spacing: -0.01em; margin: 0 0 8px; }
 .reason { color: var(--muted); margin: 0 0 20px; white-space: pre-wrap; }
 .places { border: 0; margin: 4px 0 0; padding: 0; min-width: 0; }
@@ -319,7 +320,8 @@ function render() {
       const saved = res.body.saved.length;
       finish("Saved", `${saved === 1 ? "1 key" : saved + " keys"} saved to ${places.doneNames()}. You can close this tab and go back to your chat.`);
     } else {
-      banner.textContent = res.body.error || "The connection dropped before agentikeys confirmed the save. Your agent can check whether it went through.";
+      banner.replaceChildren();
+      withCode(banner, res.body.error || "The connection dropped before agentikeys confirmed the save. Your agent can check whether it went through.");
       banner.hidden = false;
       save.textContent = label;
       save.disabled = cancel.disabled = false;

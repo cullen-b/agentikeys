@@ -152,16 +152,27 @@ impl SecretStore for Gcp {
         }
         let project = self.project()?;
         names.iter().try_for_each(|n| validate_name(n))?;
-        // Read-only probe: catches a disabled API or missing permission before the user types anything.
+        // Read-only probe: catches a disabled API or missing permission before anything is saved.
         let probe = ["secrets", "list", "--project", project, "--limit=1", "--format=value(name)"];
-        run(self.gcloud(&probe), None, None).map_err(|e| {
-            anyhow::anyhow!(
-                "can't use Secret Manager in project {project}: {e:#}\nEnable it with `gcloud services enable \
-                 secretmanager.googleapis.com --project {project}` and make sure the signed-in account has \
-                 roles/secretmanager.viewer or better"
-            )
-        })?;
-        Ok(())
+        let out =
+            self.gcloud(&probe).output().map_err(|e| anyhow::anyhow!("running `{} secrets list`: {e}", self.bin))?;
+        if out.status.success() {
+            return Ok(());
+        }
+        let err = String::from_utf8_lossy(&out.stderr);
+        if err.contains("SERVICE_DISABLED") {
+            bail!(
+                "Secret Manager isn't turned on in project {project}. Turn it on with `gcloud services enable \
+                 secretmanager.googleapis.com --project {project}`, wait a minute, then save again."
+            );
+        }
+        if err.contains("PERMISSION_DENIED") || err.contains("does not have permission") {
+            bail!(
+                "your Google account can't use Secret Manager in project {project}. It needs the Secret Manager \
+                 Admin role (roles/secretmanager.admin) there."
+            );
+        }
+        bail!("can't use Secret Manager in project {project}: {}", super::first_line(&err))
     }
 
     fn put(&self, name: &str, value: &str) -> Result<String> {
@@ -287,7 +298,11 @@ esac"#
         let dir = temp_dir("gcp-disabled");
         let body = r#"case "$1 $2" in "auth list") echo me@example.com;; "secrets list") echo "SERVICE_DISABLED" >&2; exit 1;; esac"#;
         let err = gcp(&dir, body, Some("acme")).preflight(&["A"]).unwrap_err().to_string();
-        assert!(err.contains("SERVICE_DISABLED") && err.contains("gcloud services enable"), "{err}");
+        assert!(err.contains("isn't turned on") && err.contains("gcloud services enable"), "{err}");
+
+        let denied = r#"case "$1 $2" in "auth list") echo me@example.com;; "secrets list") echo "ERROR: PERMISSION_DENIED" >&2; exit 1;; esac"#;
+        let err = gcp(&temp_dir("gcp-denied-probe"), denied, Some("acme")).preflight(&["A"]).unwrap_err().to_string();
+        assert!(err.contains("roles/secretmanager.admin"), "{err}");
     }
 
     #[test]
