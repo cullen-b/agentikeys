@@ -75,6 +75,8 @@ button:disabled { opacity: 0.6; cursor: default; }
 .banner { color: var(--danger); margin: 0 0 16px; }
 footer { border-top: 1px solid var(--line); margin-top: 24px; padding-top: 18px; }
 footer p { font-size: 13px; color: var(--muted); margin: 0 0 16px; }
+footer p.note { margin-bottom: 10px; }
+footer a { color: var(--accent); text-underline-offset: 2px; }
 .actions { display: flex; justify-content: flex-end; gap: 10px; }
 .done h1 { margin-bottom: 6px; }
 .done p { color: var(--muted); margin: 0; }
@@ -152,6 +154,7 @@ function render() {
   const save = el("button", { type: "submit", class: "primary", text: n === 1 ? "Save key" : `Save ${n} keys` });
   const cancel = el("button", { type: "button", text: "Cancel" });
   form.append(el("footer", {},
+    DATA.note ? noteEl() : null,
     el("p", { text: "Your agent learns which keys were saved, never what you typed." }),
     el("div", { class: "actions" }, cancel, save)));
 
@@ -189,7 +192,20 @@ function render() {
     save.disabled = cancel.disabled = true;
     const label = save.textContent;
     save.textContent = "Saving…";
-    const res = await post("submit", { values });
+    let body;
+    try {
+      body = DATA.encrypt ? { sealed: await seal(values) } : { values };
+    } catch {
+      body = null;
+    }
+    if (!body) {
+      banner.textContent = "Couldn't encrypt the values in this browser. Try a current version of Chrome, Safari, Firefox or Edge.";
+      banner.hidden = false;
+      save.textContent = label;
+      save.disabled = cancel.disabled = false;
+      return;
+    }
+    const res = await post("submit", body);
     if (res.ok) {
       const saved = res.body.saved.length;
       finish("Saved", `${saved === 1 ? "1 key" : saved + " keys"} written to ${DATA.path}. You can close this tab and go back to your chat.`);
@@ -210,7 +226,52 @@ function render() {
   app.append(brand, el("h1", { text: DATA.title }));
   if (DATA.reason) app.append(el("p", { class: "reason", text: DATA.reason }));
   app.append(dest, banner, form);
+  if (DATA.encrypt && (!hostKey() || !window.crypto || !crypto.subtle)) {
+    banner.textContent = hostKey()
+      ? "This browser can't encrypt the values. Try a current version of Chrome, Safari, Firefox or Edge."
+      : "This link is missing its key. Copy the whole link from your chat, including the part after #.";
+    banner.hidden = false;
+    save.disabled = true;
+  }
   inputs[0].input.focus();
+}
+
+// Tunnel note, with the Tailscale link made clickable.
+function noteEl() {
+  const p = el("p", { class: "note" });
+  const url = "https://tailscale.com/download";
+  const [before, after] = DATA.note.split(url);
+  p.append(before);
+  if (after !== undefined) p.append(el("a", { href: url, target: "_blank", rel: "noopener noreferrer", text: "Tailscale" }), after);
+  return p;
+}
+
+const b64u = {
+  enc: (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""),
+  dec: (s) => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4)), (c) => c.charCodeAt(0)),
+};
+
+function hostKey() {
+  const m = /(?:^#|&)k=([A-Za-z0-9_-]+)/.exec(location.hash);
+  return m ? m[1] : null;
+}
+
+// ECDH P-256 -> HKDF-SHA256 -> AES-256-GCM, bound to this link's token. Mirrors src/seal.rs.
+async function seal(values) {
+  const subtle = crypto.subtle;
+  const enc = new TextEncoder();
+  const curve = { name: "ECDH", namedCurve: "P-256" };
+  const recipient = await subtle.importKey("raw", b64u.dec(hostKey()), curve, false, []);
+  const eph = await subtle.generateKey(curve, false, ["deriveBits"]);
+  const bits = await subtle.deriveBits({ name: "ECDH", public: recipient }, eph.privateKey, 256);
+  const hkdf = await subtle.importKey("raw", bits, "HKDF", false, ["deriveKey"]);
+  const key = await subtle.deriveKey(
+    { name: "HKDF", hash: "SHA-256", salt: new Uint8Array(0), info: enc.encode("agentikeys v1") },
+    hkdf, { name: "AES-GCM", length: 256 }, false, ["encrypt"]);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const aad = enc.encode(location.pathname.slice(1));
+  const ct = await subtle.encrypt({ name: "AES-GCM", iv, additionalData: aad }, key, enc.encode(JSON.stringify({ values })));
+  return { epk: b64u.enc(await subtle.exportKey("raw", eph.publicKey)), iv: b64u.enc(iv), ct: b64u.enc(ct) };
 }
 
 async function post(action, body) {

@@ -1,7 +1,9 @@
-//! One-shot local page that collects the values. Listens on 127.0.0.1 only, behind a random token.
+//! One-shot page that collects the values, behind a random token. `transport` decides where it listens.
 
+use crate::seal::{Opener, Sealed};
 use crate::spec::Spec;
 use crate::store::{self, Plan};
+use crate::transport::{Exposure, TUNNEL_NOTE, Via};
 use anyhow::{Result, anyhow};
 use serde::Deserialize;
 use serde_json::json;
@@ -25,17 +27,33 @@ struct Submission {
     values: BTreeMap<String, String>,
 }
 
-pub fn serve(spec: &Spec, plan: &Plan, timeout: Duration, on_ready: impl FnOnce(&str)) -> Result<Outcome> {
-    let server = Server::http("127.0.0.1:0").map_err(|e| anyhow!("starting local server: {e}"))?;
-    let port = server.server_addr().to_ip().ok_or_else(|| anyhow!("no local port"))?.port();
+/// Request body: plain values, or values sealed to this request's key.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Body {
+    Sealed { sealed: Sealed },
+    Plain(Submission),
+}
+
+pub fn serve(
+    spec: &Spec,
+    plan: &Plan,
+    server: Server,
+    exposure: &Exposure,
+    timeout: Duration,
+    on_ready: impl FnOnce(&str),
+) -> Result<Outcome> {
     let token = random_hex(32)?;
     let nonce = random_hex(16)?;
-    let host = format!("127.0.0.1:{port}");
-    let origin = format!("http://{host}");
-    let page = render(spec, plan, &nonce);
+    let opener = if exposure.encrypt { Some(Opener::new()?) } else { None };
+    let page = render(spec, plan, exposure, &nonce);
     let base = format!("/{token}");
 
-    on_ready(&format!("{origin}{base}"));
+    let mut url = format!("{}{base}", exposure.public_origin);
+    if let Some(o) = &opener {
+        url.push_str(&format!("#k={}", o.public_key()));
+    }
+    on_ready(&url);
 
     let deadline = Instant::now() + timeout;
     loop {
@@ -46,7 +64,7 @@ pub fn serve(spec: &Spec, plan: &Plan, timeout: Duration, on_ready: impl FnOnce(
         let Some(mut req) = server.recv_timeout(left)? else { continue };
 
         // Host check defeats DNS rebinding; the token keeps other local pages from finding the form.
-        if header(&req, "Host").as_deref() != Some(host.as_str()) {
+        if !header(&req, "Host").is_some_and(|h| exposure.hosts.contains(&h)) {
             respond(req, 403, "text/plain", "forbidden".into(), None);
             continue;
         }
@@ -54,7 +72,7 @@ pub fn serve(spec: &Spec, plan: &Plan, timeout: Duration, on_ready: impl FnOnce(
         match (req.method(), url.as_str()) {
             (Method::Get, u) if u == base => respond(req, 200, "text/html; charset=utf-8", page.clone(), Some(&nonce)),
             (Method::Post, u) if u == format!("{base}/submit") || u == format!("{base}/cancel") => {
-                if header(&req, "Origin").as_deref() != Some(origin.as_str())
+                if !header(&req, "Origin").is_some_and(|o| exposure.origins.contains(&o))
                     || !header(&req, "Content-Type").is_some_and(|c| c.starts_with("application/json"))
                 {
                     respond(req, 403, "text/plain", "forbidden".into(), None);
@@ -64,7 +82,9 @@ pub fn serve(spec: &Spec, plan: &Plan, timeout: Duration, on_ready: impl FnOnce(
                     respond_json(req, 200, json!({"ok": true}));
                     return Ok(Outcome::Cancelled);
                 }
-                let submission = read_json::<Submission>(&mut req).and_then(|s| collect(spec, s));
+                let submission = read_json::<Body>(&mut req)
+                    .and_then(|body| unseal(body, opener.as_ref(), token.as_bytes()))
+                    .and_then(|s| collect(spec, s));
                 let values = match submission {
                     Ok(v) => v,
                     Err(e) => {
@@ -87,6 +107,15 @@ pub fn serve(spec: &Spec, plan: &Plan, timeout: Duration, on_ready: impl FnOnce(
             }
             _ => respond(req, 404, "text/plain", "not found".into(), None),
         }
+    }
+}
+
+fn unseal(body: Body, opener: Option<&Opener>, aad: &[u8]) -> Result<Submission> {
+    match (body, opener) {
+        (Body::Sealed { sealed }, Some(o)) => Ok(serde_json::from_slice(&o.open(&sealed, aad)?)?),
+        (Body::Plain(s), None) => Ok(s),
+        (Body::Plain(_), Some(_)) => Err(anyhow!("values must be encrypted on this link; reload the page and try again")),
+        (Body::Sealed { .. }, None) => Err(anyhow!("unexpected encrypted submission")),
     }
 }
 
@@ -115,13 +144,15 @@ fn key_of(spec: &Spec, name: &str) -> String {
     spec.fields.iter().find(|f| f.name == name).map(|f| f.key_path().to_string()).unwrap_or_default()
 }
 
-fn render(spec: &Spec, plan: &Plan, nonce: &str) -> String {
+fn render(spec: &Spec, plan: &Plan, exposure: &Exposure, nonce: &str) -> String {
     let data = json!({
         "title": spec.title,
         "reason": spec.reason,
         "path": tilde(&plan.path.display().to_string()),
         "format": plan.format.as_str(),
         "git": plan.git,
+        "encrypt": exposure.encrypt,
+        "note": (exposure.via == Via::Tunnel).then_some(TUNNEL_NOTE),
         "fields": spec.fields.iter().map(|f| json!({
             "name": f.name, "label": f.label, "optional": f.optional,
             "placeholder": f.placeholder, "pattern": f.pattern, "help_url": f.help_url,
@@ -174,6 +205,7 @@ fn respond(req: Request, status: u16, content_type: &str, body: String, nonce: O
         ("Cache-Control", "no-store"),
         ("Referrer-Policy", "no-referrer"),
         ("X-Content-Type-Options", "nosniff"),
+        ("X-Robots-Tag", "noindex, nofollow"),
     ] {
         res.add_header(Header::from_bytes(k, v).expect("static header"));
     }
