@@ -58,7 +58,8 @@ or hand to an agent. Omit `path` to store only.
 - Parameter Store: the parameter is created as a `SecureString` or overwritten (a new parameter
   version). Standard tier values are limited to 4 KB, Secrets Manager values to 64 KB.
 - Before the page opens, agentikeys checks that `aws` is installed and signed in
-  (`aws sts get-caller-identity`) and that every name is valid. It creates nothing at that point.
+  (`aws sts get-caller-identity`), that a region is set (spec, `AWS_REGION`/`AWS_DEFAULT_REGION`, or
+  `aws configure get region`) and that every name is valid. It creates nothing at that point.
 
 **IAM.** The signed-in identity needs:
 

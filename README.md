@@ -88,6 +88,35 @@ send to servers; the page encrypts the values (ECDH → HKDF-SHA256 → AES-256-
 before sending, so Cloudflare relays only ciphertext. Cloudflare does serve the page itself, so tunnel
 mode trusts Cloudflare not to alter it; Tailscale avoids that. The tunnel closes when the request ends.
 
+## Secret stores
+
+Instead of (or as well as) a file, values can go straight into a cloud secret store. Set
+`destination.store`; if `destination.path` is also set, that file receives **references** to the
+secrets (resource names, ARNs or URLs), not the values, so it's safe to commit.
+
+```json
+{
+  "title": "Stripe keys",
+  "fields": [{"name": "STRIPE_SECRET_KEY"}],
+  "destination": {
+    "store": {"type": "gcp_secret_manager", "project": "acme-prod"},
+    "path": ".env"
+  }
+}
+```
+
+| `store.type` | Uses | Docs |
+|---|---|---|
+| `gcp_secret_manager` | `gcloud` | [docs/stores/gcp.md](docs/stores/gcp.md) |
+| `aws_secrets_manager`, `aws_parameter_store` | `aws` | [docs/stores/aws.md](docs/stores/aws.md) |
+| `azure_key_vault` | `az` | [docs/stores/azure.md](docs/stores/azure.md) |
+
+Each store uses its official CLI and the login you already have. Values reach the CLI only on stdin,
+never as a command-line argument. Before the page opens, agentikeys checks the CLI is installed,
+you're signed in and every name is valid, so a problem never wastes what you type. A field's
+`secret` sets its name in the store (it defaults to `name`). The receipt adds `store` and
+`references`. Stores are macOS/Linux only for now.
+
 ## Instructions for agents
 
 Paste into `AGENTS.md`, `CLAUDE.md` or your harness's equivalent:
@@ -115,5 +144,5 @@ what the vault integrations below are for.
 
 - v1: OS keychain backend, `agentikeys run -- <cmd>` injecting env vars at launch with output
   redaction, MCP server.
-- v2: 1Password, Vault, GCP / AWS Secret Manager, Doppler, and user-defined integrations, writing
-  references (e.g. `op://...`) into files instead of raw values.
+- v2: 1Password, Vault/OpenBao, GitHub Actions secrets, Doppler, Infisical, and user-defined
+  integrations; saved default destinations so agents don't have to ask.

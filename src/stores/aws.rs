@@ -96,6 +96,24 @@ impl Aws {
             .ok_or_else(|| anyhow!("AWS Secrets Manager saved '{name}' but returned no ARN"))
     }
 
+    /// STS works without a region but the secret services don't, so catch a missing one before the page opens.
+    fn check_region(&self) -> Result<()> {
+        let from_env = ["AWS_REGION", "AWS_DEFAULT_REGION"].iter().any(|v| std::env::var(v).is_ok_and(|r| !r.is_empty()));
+        if self.opts.region.is_some() || from_env {
+            return Ok(());
+        }
+        let mut cmd = Command::new(&self.bin);
+        cmd.args(["configure", "get", "region"]);
+        if let Some(p) = &self.opts.profile {
+            cmd.args(["--profile", p]);
+        }
+        // `configure get` exits non-zero when the value is unset.
+        match run(cmd, None, None) {
+            Ok(r) if !r.trim().is_empty() => Ok(()),
+            _ => bail!("no AWS region is set: add \"region\" to destination.store, or run `aws configure set region <region>`"),
+        }
+    }
+
     fn parameter_store_put(&self, name: &str, value: &str) -> Result<String> {
         let mut request = json!({ "Name": name, "Value": value, "Type": "SecureString", "Overwrite": true });
         if let Some(key) = &self.opts.kms_key_id {
@@ -125,7 +143,7 @@ impl SecretStore for Aws {
                 Service::ParameterStore => parameter_name_problem(name),
             };
             if let Some(rule) = rule {
-                bail!("'{name}' isn't a valid {} name: {rule}. Rename the field or set its `secret_name`.", self.label());
+                bail!("'{name}' isn't a valid {} name: {rule}. Set `\"secret\"` on that field to a valid name.", self.label());
             }
         }
         let identity = run(self.command(&["sts", "get-caller-identity"]), None, None).map_err(|e| {
@@ -139,7 +157,7 @@ impl SecretStore for Aws {
         serde_json::from_str::<Value>(&identity).ok().filter(|v| v["Account"].is_string()).ok_or_else(|| {
             anyhow!("`aws sts get-caller-identity` returned something unexpected; check that `aws --version` reports AWS CLI v2")
         })?;
-        Ok(())
+        self.check_region()
     }
 
     fn put(&self, name: &str, value: &str) -> Result<String> {
@@ -324,6 +342,19 @@ echo '{"ARN":"arn:aws:secretsmanager:us-east-1:123456789012:secret:API_KEY-a1b2c
             Aws::new(Service::ParameterStore, &SecretsManagerOptions::default(), "aws").describe(),
             ("AWS Systems Manager Parameter Store".into(), "default region".into())
         );
+    }
+
+    #[test]
+    fn preflight_requires_a_region() {
+        if ["AWS_REGION", "AWS_DEFAULT_REGION"].iter().any(|v| std::env::var(v).is_ok_and(|r| !r.is_empty())) {
+            return;
+        }
+        let dir = temp_dir("aws-no-region");
+        let body = r#"case "$*" in *sts*) echo '{"Account":"123456789012"}';; *configure*) exit 1;; esac"#;
+        let store = backend(Service::SecretsManager, &dir, body, opts(None, Some("work"), None));
+        let err = store.preflight(&["API_KEY"]).unwrap_err().to_string();
+        assert!(err.contains("no AWS region"), "{err}");
+        assert_eq!(call(&dir, 2).0, ["configure", "get", "region", "--profile", "work"]);
     }
 
     #[test]

@@ -30,8 +30,9 @@ or hand to an agent. Omit `path` to store only.
   letters, digits, `-` and `_`; an invalid name is rejected before the page opens.
 - A new secret is created with automatic replication; an existing secret gets a new version
   (older versions are kept).
-- Before the page opens, agentikeys checks that `gcloud` is installed, signed in and has a project. It
-  creates nothing at that point.
+- Before the page opens, agentikeys checks that `gcloud` is installed, signed in and has a project, and
+  that Secret Manager is usable there (a read-only `gcloud secrets list --limit=1`, which catches a
+  disabled API or missing permission). It creates nothing at that point.
 
 **IAM.** The signed-in identity needs, on the project: `roles/secretmanager.admin`, or the narrower
 combination of `roles/secretmanager.viewer` (to check whether a secret exists), plus

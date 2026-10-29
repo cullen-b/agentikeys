@@ -114,8 +114,18 @@ impl SecretStore for Gcp {
         if accounts.trim().is_empty() {
             bail!("gcloud isn't signed in: run `gcloud auth login`");
         }
-        self.project()?;
-        names.iter().try_for_each(|n| validate_name(n))
+        let project = self.project()?;
+        names.iter().try_for_each(|n| validate_name(n))?;
+        // Read-only probe: catches a disabled API or missing permission before the user types anything.
+        let probe = ["secrets", "list", "--project", project, "--limit=1", "--format=value(name)"];
+        run(self.gcloud(&probe), None, None).map_err(|e| {
+            anyhow::anyhow!(
+                "can't use Secret Manager in project {project}: {e:#}\nEnable it with `gcloud services enable \
+                 secretmanager.googleapis.com --project {project}` and make sure the signed-in account has \
+                 roles/secretmanager.viewer or better"
+            )
+        })?;
+        Ok(())
     }
 
     fn put(&self, name: &str, value: &str) -> Result<String> {
@@ -157,6 +167,7 @@ mod tests {
 "config get-value") echo my-proj;;
 "secrets describe") echo "{err}" >&2; exit {rc};;
 "secrets create") ;;
+"secrets list") ;;
 "secrets versions") echo projects/123/secrets/$4/versions/7;;
 esac"#
         )
@@ -232,9 +243,18 @@ esac"#
         let dir = temp_dir("gcp-preflight-ok");
         let g = gcp(&dir, &router(0, ""), None);
         g.preflight(&["A", "b_c-1"]).unwrap();
-        assert_eq!(calls(&dir), 2);
+        assert_eq!(calls(&dir), 3);
         assert_eq!(call(&dir, 1).0.join(" "), "auth list --filter=status:ACTIVE --format=value(account)");
         assert_eq!(call(&dir, 2).0.join(" "), "config get-value project");
+        assert_eq!(call(&dir, 3).0.join(" "), "secrets list --project my-proj --limit=1 --format=value(name)");
+    }
+
+    #[test]
+    fn preflight_reports_disabled_api() {
+        let dir = temp_dir("gcp-disabled");
+        let body = r#"case "$1 $2" in "auth list") echo me@example.com;; "secrets list") echo "SERVICE_DISABLED" >&2; exit 1;; esac"#;
+        let err = gcp(&dir, body, Some("acme")).preflight(&["A"]).unwrap_err().to_string();
+        assert!(err.contains("SERVICE_DISABLED") && err.contains("gcloud services enable"), "{err}");
     }
 
     #[test]
