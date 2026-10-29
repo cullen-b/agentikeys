@@ -147,6 +147,15 @@ pub fn detect() -> Vec<Offer> {
     found.into_iter().flat_map(|(_, offers)| offers).collect()
 }
 
+/// The first non-empty line of a CLI's error output, capped so it reads on the page.
+pub fn first_line(text: &str) -> String {
+    let line = text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
+    match line.char_indices().nth(300) {
+        Some((i, _)) => format!("{}…", &line[..i]),
+        None => line.to_string(),
+    }
+}
+
 /// True when `err` came from the CLI not being installed.
 pub fn not_installed(err: &anyhow::Error) -> bool {
     err.chain().any(|c| c.downcast_ref::<std::io::Error>().is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound))
@@ -183,7 +192,7 @@ pub fn run(mut cmd: Command, input: Option<&str>, secret: Option<&str>) -> Resul
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         let detail = if stderr.trim().is_empty() { stdout.trim() } else { stderr.trim() };
-        bail!("`{shown}` failed: {}", redact(detail));
+        bail!("`{shown}` failed: {}", first_line(&redact(detail)));
     }
     Ok(stdout)
 }
@@ -246,5 +255,13 @@ mod tests {
         let failing = testing::fake_cli(&dir, "bad", "echo \"bad value s3cret\" >&2; exit 1");
         let err = run(Command::new(&failing), Some("s3cret"), Some("s3cret")).unwrap_err().to_string();
         assert!(err.contains("[redacted]") && !err.contains("s3cret"), "{err}");
+    }
+
+    #[test]
+    fn errors_are_trimmed_to_one_readable_line() {
+        assert_eq!(first_line("\n  ERROR: nope\nmore detail\n"), "ERROR: nope");
+        let long = first_line(&"x".repeat(500));
+        assert_eq!(long.chars().count(), 301);
+        assert!(long.ends_with('…'));
     }
 }
