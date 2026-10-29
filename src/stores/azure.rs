@@ -28,7 +28,11 @@ pub fn detect() -> Vec<Offer> {
 }
 
 fn detect_with(kv: &KeyVault) -> Vec<Offer> {
-    let user = match super::run(kv.az(&["account", "show", "--query", "user.name", "-o", "tsv", "--only-show-errors"]), None, None) {
+    let user = match super::run(
+        kv.az(&["account", "show", "--query", "user.name", "-o", "tsv", "--only-show-errors"]),
+        None,
+        None,
+    ) {
         Err(e) if not_installed(&e) => return Vec::new(),
         Err(_) => return vec![Offer::unavailable(KIND, SERVICE, "Not signed in: run `az login`")],
         Ok(out) => out.trim().to_string(),
@@ -87,7 +91,9 @@ impl SecretStore for KeyVault {
             if missing {
                 bail!("the Azure CLI (`{}`) isn't installed: see {INSTALL_URL}", self.bin);
             }
-            bail!("the Azure CLI isn't signed in (or the subscription isn't usable): run `az login`, then retry. {e:#}");
+            bail!(
+                "the Azure CLI isn't signed in (or the subscription isn't usable): run `az login`, then retry. {e:#}"
+            );
         }
         Ok(())
     }
@@ -101,8 +107,22 @@ impl SecretStore for KeyVault {
     fn put(&self, name: &str, value: &str) -> Result<String> {
         // The value goes in on stdin as a one-line file: `--value` would expose it in argv.
         let cmd = self.az(&[
-            "keyvault", "secret", "set", "--vault-name", &self.opts.vault, "--name", name, "--file", "/dev/stdin",
-            "--encoding", "utf-8", "--query", "id", "-o", "tsv", "--only-show-errors",
+            "keyvault",
+            "secret",
+            "set",
+            "--vault-name",
+            &self.opts.vault,
+            "--name",
+            name,
+            "--file",
+            "/dev/stdin",
+            "--encoding",
+            "utf-8",
+            "--query",
+            "id",
+            "-o",
+            "tsv",
+            "--only-show-errors",
         ]);
         let out = super::run(cmd, Some(value), Some(value))?;
         let id = out.trim();
@@ -144,7 +164,9 @@ fn check_secret_names(names: &[&str]) -> Result<()> {
         if let Some(other) = seen.insert(name.to_ascii_lowercase(), name)
             && other != *name
         {
-            problems.push(format!("{other:?} and {name:?} are the same Key Vault secret (names ignore case): rename one with `secret`"));
+            problems.push(format!(
+                "{other:?} and {name:?} are the same Key Vault secret (names ignore case): rename one with `secret`"
+            ));
         }
     }
     if !problems.is_empty() {
@@ -195,8 +217,22 @@ mod tests {
         assert_eq!(
             args,
             [
-                "keyvault", "secret", "set", "--vault-name", "acme-vault", "--name", "stripe-secret-key", "--file",
-                "/dev/stdin", "--encoding", "utf-8", "--query", "id", "-o", "tsv", "--only-show-errors"
+                "keyvault",
+                "secret",
+                "set",
+                "--vault-name",
+                "acme-vault",
+                "--name",
+                "stripe-secret-key",
+                "--file",
+                "/dev/stdin",
+                "--encoding",
+                "utf-8",
+                "--query",
+                "id",
+                "-o",
+                "tsv",
+                "--only-show-errors"
             ]
         );
         assert_eq!(stdin, SECRET, "no trailing newline");

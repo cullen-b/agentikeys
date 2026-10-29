@@ -30,7 +30,8 @@ fn detect_with(aws: &Aws) -> Vec<Offer> {
         Err(e) if not_installed(&e) => return Vec::new(),
         Err(_) => (String::new(), Some("Not signed in: run `aws configure` or `aws sso login`".to_string())),
         Ok(out) => {
-            let account = serde_json::from_str::<Value>(&out).ok().and_then(|v| v["Account"].as_str().map(String::from));
+            let account =
+                serde_json::from_str::<Value>(&out).ok().and_then(|v| v["Account"].as_str().map(String::from));
             match aws.region() {
                 Some(r) => (format!("Account {} · {r}", account.unwrap_or_default()), None),
                 None => (String::new(), Some("No region set: run `aws configure set region <region>`".to_string())),
@@ -100,7 +101,8 @@ impl Aws {
     /// from fetching a value that looks like a URL. Unix-only, as `/dev/stdin` doesn't exist on Windows.
     fn call_json(&self, service: &str, op: &str, request: &Value, secret: Option<&str>) -> Result<Value> {
         let cmd = self.command(&[service, op, "--cli-input-json", "file:///dev/stdin"]);
-        let out = run(cmd, Some(&request.to_string()), secret)?;
+        let input = zeroize::Zeroizing::new(request.to_string());
+        let out = run(cmd, Some(&input), secret)?;
         serde_json::from_str(&out).with_context(|| format!("reading the response of `aws {service} {op}`"))
     }
 
@@ -129,14 +131,17 @@ impl Aws {
     /// STS works without a region but the secret services don't, so catch a missing one before the page opens.
     fn check_region(&self) -> Result<()> {
         if self.region().is_none() {
-            bail!("no AWS region is set: add \"region\" to destination.store, or run `aws configure set region <region>`");
+            bail!(
+                "no AWS region is set: add \"region\" to destination.store, or run `aws configure set region <region>`"
+            );
         }
         Ok(())
     }
 
     /// The region from the spec, the environment, or `aws configure`.
     fn region(&self) -> Option<String> {
-        let from_env = ["AWS_REGION", "AWS_DEFAULT_REGION"].iter().find_map(|v| std::env::var(v).ok().filter(|r| !r.is_empty()));
+        let from_env =
+            ["AWS_REGION", "AWS_DEFAULT_REGION"].iter().find_map(|v| std::env::var(v).ok().filter(|r| !r.is_empty()));
         if let Some(r) = self.opts.region.clone().or(from_env) {
             return Some(r);
         }
@@ -170,7 +175,10 @@ impl SecretStore for Aws {
 
     fn preflight(&self, names: &[&str]) -> Result<()> {
         if !cfg!(unix) {
-            bail!("{} isn't supported on Windows yet (the aws CLI is fed through /dev/stdin); use macOS or Linux", self.label());
+            bail!(
+                "{} isn't supported on Windows yet (the aws CLI is fed through /dev/stdin); use macOS or Linux",
+                self.label()
+            );
         }
         for name in names {
             let rule = match self.service {
@@ -178,7 +186,10 @@ impl SecretStore for Aws {
                 Service::ParameterStore => parameter_name_problem(name),
             };
             if let Some(rule) = rule {
-                bail!("'{name}' isn't a valid {} name: {rule}. Set `\"secret\"` on that field to a valid name.", self.label());
+                bail!(
+                    "'{name}' isn't a valid {} name: {rule}. Set `\"secret\"` on that field to a valid name.",
+                    self.label()
+                );
             }
         }
         let identity = run(self.command(&["sts", "get-caller-identity"]), None, None).map_err(|e| {
@@ -280,7 +291,12 @@ echo '{"ARN":"arn:aws:secretsmanager:us-east-1:123456789012:secret:API_KEY-a1b2c
     #[test]
     fn secrets_manager_creates_missing_secret() {
         let dir = temp_dir("aws-sm-create");
-        let store = backend(Service::SecretsManager, &dir, MISSING_THEN_CREATE, opts(Some("eu-west-1"), Some("work"), Some("alias/mine")));
+        let store = backend(
+            Service::SecretsManager,
+            &dir,
+            MISSING_THEN_CREATE,
+            opts(Some("eu-west-1"), Some("work"), Some("alias/mine")),
+        );
         assert_eq!(store.put("API_KEY", SECRET).unwrap(), ARN);
         assert_eq!(calls(&dir), 2);
 
@@ -293,8 +309,18 @@ echo '{"ARN":"arn:aws:secretsmanager:us-east-1:123456789012:secret:API_KEY-a1b2c
         let (argv, stdin) = call(&dir, 2);
         assert_eq!(
             argv,
-            ["--region", "eu-west-1", "--profile", "work", "secretsmanager", "create-secret",
-             "--cli-input-json", "file:///dev/stdin", "--output", "json"]
+            [
+                "--region",
+                "eu-west-1",
+                "--profile",
+                "work",
+                "secretsmanager",
+                "create-secret",
+                "--cli-input-json",
+                "file:///dev/stdin",
+                "--output",
+                "json"
+            ]
         );
         assert_eq!(json_of(&stdin), json!({ "Name": "API_KEY", "SecretString": SECRET, "KmsKeyId": "alias/mine" }));
         assert_secret_only_on_stdin(&dir);
@@ -303,14 +329,18 @@ echo '{"ARN":"arn:aws:secretsmanager:us-east-1:123456789012:secret:API_KEY-a1b2c
     #[test]
     fn secrets_manager_updates_existing_secret() {
         let dir = temp_dir("aws-sm-update");
-        let body = r#"echo '{"ARN":"arn:aws:secretsmanager:us-east-1:123456789012:secret:API_KEY-a1b2c3","Name":"API_KEY"}'"#;
+        let body =
+            r#"echo '{"ARN":"arn:aws:secretsmanager:us-east-1:123456789012:secret:API_KEY-a1b2c3","Name":"API_KEY"}'"#;
         let store = backend(Service::SecretsManager, &dir, body, opts(None, None, Some("alias/mine")));
         assert_eq!(store.put("API_KEY", SECRET).unwrap(), ARN);
         assert_eq!(calls(&dir), 2);
         assert_eq!(call(&dir, 1).0[0], "secretsmanager");
 
         let (argv, stdin) = call(&dir, 2);
-        assert_eq!(argv, ["secretsmanager", "put-secret-value", "--cli-input-json", "file:///dev/stdin", "--output", "json"]);
+        assert_eq!(
+            argv,
+            ["secretsmanager", "put-secret-value", "--cli-input-json", "file:///dev/stdin", "--output", "json"]
+        );
         assert_eq!(json_of(&stdin), json!({ "SecretId": "API_KEY", "SecretString": SECRET }));
         assert_secret_only_on_stdin(&dir);
     }
@@ -333,20 +363,37 @@ echo '{"ARN":"arn:aws:secretsmanager:us-east-1:123456789012:secret:API_KEY-a1b2c
         );
         let store = backend(Service::SecretsManager, &dir, &body, SecretsManagerOptions::default());
         let err = format!("{:#}", store.put("API_KEY", SECRET).unwrap_err());
-        assert!(err.contains("InvalidRequestException") && err.contains("[redacted]") && !err.contains(SECRET), "{err}");
+        assert!(
+            err.contains("InvalidRequestException") && err.contains("[redacted]") && !err.contains(SECRET),
+            "{err}"
+        );
     }
 
     #[test]
     fn parameter_store_overwrites_secure_string() {
         let dir = temp_dir("aws-ssm-put");
-        let store = backend(Service::ParameterStore, &dir, r#"echo '{"Version":3,"Tier":"Standard"}'"#, opts(Some("us-west-2"), None, Some("alias/mine")));
+        let store = backend(
+            Service::ParameterStore,
+            &dir,
+            r#"echo '{"Version":3,"Tier":"Standard"}'"#,
+            opts(Some("us-west-2"), None, Some("alias/mine")),
+        );
         assert_eq!(store.put("/app/prod/api-key", SECRET).unwrap(), "/app/prod/api-key");
         assert_eq!(calls(&dir), 1);
 
         let (argv, stdin) = call(&dir, 1);
         assert_eq!(
             argv,
-            ["--region", "us-west-2", "ssm", "put-parameter", "--cli-input-json", "file:///dev/stdin", "--output", "json"]
+            [
+                "--region",
+                "us-west-2",
+                "ssm",
+                "put-parameter",
+                "--cli-input-json",
+                "file:///dev/stdin",
+                "--output",
+                "json"
+            ]
         );
         assert_eq!(
             json_of(&stdin),
@@ -360,7 +407,10 @@ echo '{"ARN":"arn:aws:secretsmanager:us-east-1:123456789012:secret:API_KEY-a1b2c
         let dir = temp_dir("aws-ssm-default");
         let store = backend(Service::ParameterStore, &dir, "echo '{}'", SecretsManagerOptions::default());
         store.put("API_KEY", SECRET).unwrap();
-        assert_eq!(json_of(&call(&dir, 1).1), json!({ "Name": "API_KEY", "Value": SECRET, "Type": "SecureString", "Overwrite": true }));
+        assert_eq!(
+            json_of(&call(&dir, 1).1),
+            json!({ "Name": "API_KEY", "Value": SECRET, "Type": "SecureString", "Overwrite": true })
+        );
 
         let dir = temp_dir("aws-ssm-leak");
         let body = format!("echo \"An error occurred (ValidationException): {SECRET}\" >&2; exit 254");
@@ -372,7 +422,10 @@ echo '{"ARN":"arn:aws:secretsmanager:us-east-1:123456789012:secret:API_KEY-a1b2c
     #[test]
     fn describe_shows_region_and_profile() {
         let o = opts(Some("eu-west-1"), Some("work"), None);
-        assert_eq!(Aws::new(Service::SecretsManager, &o, "aws").describe(), ("AWS Secrets Manager".into(), "eu-west-1 · profile work".into()));
+        assert_eq!(
+            Aws::new(Service::SecretsManager, &o, "aws").describe(),
+            ("AWS Secrets Manager".into(), "eu-west-1 · profile work".into())
+        );
         assert_eq!(
             Aws::new(Service::ParameterStore, &SecretsManagerOptions::default(), "aws").describe(),
             ("AWS Systems Manager Parameter Store".into(), "default region".into())
@@ -395,7 +448,12 @@ echo '{"ARN":"arn:aws:secretsmanager:us-east-1:123456789012:secret:API_KEY-a1b2c
     #[test]
     fn preflight_checks_identity_with_region_and_profile() {
         let dir = temp_dir("aws-pre-ok");
-        let store = backend(Service::SecretsManager, &dir, r#"echo '{"Account":"123456789012","Arn":"arn:aws:iam::123456789012:user/me"}'"#, opts(Some("eu-west-1"), Some("work"), None));
+        let store = backend(
+            Service::SecretsManager,
+            &dir,
+            r#"echo '{"Account":"123456789012","Arn":"arn:aws:iam::123456789012:user/me"}'"#,
+            opts(Some("eu-west-1"), Some("work"), None),
+        );
         store.preflight(&["API_KEY", "db/pass.1"]).unwrap();
         assert_eq!(calls(&dir), 1);
         assert_eq!(
@@ -410,7 +468,12 @@ echo '{"ARN":"arn:aws:secretsmanager:us-east-1:123456789012:secret:API_KEY-a1b2c
         let body = "echo 'Unable to locate credentials. You can configure credentials by running \"aws configure\".' >&2; exit 253";
         let store = backend(Service::ParameterStore, &dir, body, opts(None, Some("work"), None));
         let err = store.preflight(&["API_KEY"]).unwrap_err().to_string();
-        assert!(err.contains("not signed in") && err.contains("aws sso login --profile work") && err.contains("aws configure"), "{err}");
+        assert!(
+            err.contains("not signed in")
+                && err.contains("aws sso login --profile work")
+                && err.contains("aws configure"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -425,7 +488,10 @@ echo '{"ARN":"arn:aws:secretsmanager:us-east-1:123456789012:secret:API_KEY-a1b2c
         let dir = temp_dir("aws-pre-names");
         let sm = backend(Service::SecretsManager, &dir, "echo '{}'", SecretsManagerOptions::default());
         let err = sm.preflight(&["GOOD", "has space"]).unwrap_err().to_string();
-        assert!(err.contains("'has space'") && err.contains("AWS Secrets Manager") && err.contains("ASCII letters"), "{err}");
+        assert!(
+            err.contains("'has space'") && err.contains("AWS Secrets Manager") && err.contains("ASCII letters"),
+            "{err}"
+        );
         assert!(sm.preflight(&[&"x".repeat(513)]).is_err());
 
         let ssm = backend(Service::ParameterStore, &dir, "echo '{}'", SecretsManagerOptions::default());

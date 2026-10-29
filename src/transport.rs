@@ -215,7 +215,8 @@ fn resolves_publicly(host: &str) -> std::io::Result<bool> {
 
 fn trycloudflare_host(line: &str) -> Option<String> {
     let start = line.find("https://")? + "https://".len();
-    let host: String = line[start..].chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '.').collect();
+    let host: String =
+        line[start..].chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '.').collect();
     host.ends_with(".trycloudflare.com").then_some(host)
 }
 

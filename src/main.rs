@@ -1,5 +1,8 @@
+mod log;
+mod phrase;
 mod save;
 mod seal;
+mod setup;
 mod spec;
 mod store;
 mod stores;
@@ -17,7 +20,8 @@ use std::process::{Command, ExitCode, Stdio};
 use std::time::{Duration, Instant};
 use transport::Via;
 
-/// Collect secrets from the user in a browser page and write them to a file, without the agent seeing them.
+/// Let AI coding agents ask for API keys without the keys ever passing through the chat: the user enters them in a
+/// one-shot browser page and picks where they are saved.
 #[derive(Parser)]
 #[command(version)]
 struct Cli {
@@ -58,6 +62,37 @@ enum Cmd {
     Config {
         #[command(subcommand)]
         set: Option<ConfigSet>,
+    },
+    /// Teach every AI coding agent on this machine to use agentikeys (adds instructions to each
+    /// installed harness's user-level instructions file).
+    Setup {
+        /// Show what would change without writing anything.
+        #[arg(long)]
+        dry_run: bool,
+        /// Remove the instructions again.
+        #[arg(long)]
+        uninstall: bool,
+        /// Just print the instructions, e.g. to paste into a project's AGENTS.md or Cursor's rules.
+        #[arg(long)]
+        print: bool,
+    },
+    /// Show recent requests: which keys, saved where, for which project. Never values.
+    Log {
+        /// How many of the most recent requests to show.
+        #[arg(short, default_value_t = 20)]
+        n: usize,
+        /// Only requests that asked for this key (field name).
+        #[arg(long)]
+        key: Option<String>,
+        /// One JSON object per line.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show your security phrase (only in an interactive terminal, never to an agent).
+    Phrase {
+        /// Replace it with a new one.
+        #[arg(long)]
+        reset: bool,
     },
 }
 
@@ -115,7 +150,8 @@ impl Receipt {
 fn main() -> ExitCode {
     let receipt = match Cli::parse().command {
         Cmd::Request { spec, via, timeout, no_open, foreground, receipt } => {
-            let r = request(&spec, via, timeout, no_open, foreground, receipt.as_deref()).unwrap_or_else(Receipt::error);
+            let r =
+                request(&spec, via, timeout, no_open, foreground, receipt.as_deref()).unwrap_or_else(Receipt::error);
             if let Some(path) = &receipt {
                 let _ = write_receipt(path, &r);
             }
@@ -126,18 +162,115 @@ fn main() -> ExitCode {
             r
         }
         Cmd::Wait { id, timeout } => wait(&id, timeout).unwrap_or_else(Receipt::error),
-        Cmd::Config { set } => {
-            return match config(set) {
-                Ok(()) => ExitCode::SUCCESS,
-                Err(e) => {
-                    eprintln!("agentikeys: {e:#}");
-                    ExitCode::FAILURE
-                }
-            };
-        }
+        Cmd::Config { set } => return plain(config(set)),
+        Cmd::Phrase { reset } => return plain(show_phrase(reset)),
+        Cmd::Setup { dry_run, uninstall, print } => return plain(run_setup(dry_run, uninstall, print)),
+        Cmd::Log { n, key, json } => return plain(show_log(n, key.as_deref(), json)),
     };
     println!("{}", serde_json::to_string(&receipt).expect("receipt serializes"));
     receipt.exit_code()
+}
+
+/// Exit status for commands a person runs, which print text rather than a receipt.
+fn plain(result: Result<()>) -> ExitCode {
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("agentikeys: {e:#}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_setup(dry_run: bool, uninstall: bool, print: bool) -> Result<()> {
+    use std::io::IsTerminal;
+    if print {
+        println!("{}", setup::INSTRUCTIONS);
+        return Ok(());
+    }
+    let home = PathBuf::from(std::env::var_os("HOME").context("HOME isn't set")?);
+    let action = if uninstall { setup::Action::Uninstall } else { setup::Action::Install };
+    let reports = setup::run(&home, action, dry_run)?;
+    if reports.is_empty() {
+        println!("No supported AI coding agents found in {}.", home.display());
+    }
+    for r in &reports {
+        let what = match (&r.change, dry_run) {
+            (setup::Change::Added, false) => "added to",
+            (setup::Change::Added, true) => "would be added to",
+            (setup::Change::Updated, false) => "updated in",
+            (setup::Change::Updated, true) => "would be updated in",
+            (setup::Change::Removed, false) => "removed from",
+            (setup::Change::Removed, true) => "would be removed from",
+            (setup::Change::Unchanged, _) => "already up to date in",
+            (setup::Change::NotPresent, _) => "not present in",
+        };
+        println!("  {:<15} instructions {what} {}", r.harness, r.file.display());
+    }
+    if uninstall {
+        return Ok(());
+    }
+    if home.join(".cursor").is_dir() {
+        println!(
+            "  {:<15} has no settings file for this: paste `agentikeys setup --print` into Settings > Rules",
+            "Cursor"
+        );
+    }
+    if which("agentikeys").is_none() {
+        println!(
+            "\nNote: `agentikeys` isn't on your PATH, so agents can't run it yet. Install it with `cargo install --path .` or put the binary on your PATH."
+        );
+    }
+    println!();
+    if which("tailscale").is_some() {
+        println!(
+            "Working with agents from another device? Run `agentikeys config via tailscale` so key pages reach you over your tailnet."
+        );
+    } else {
+        println!(
+            "Working with agents from another device? Tailscale is the recommended way to reach key pages privately: https://tailscale.com/download"
+        );
+    }
+    if std::io::stdout().is_terminal() && !dry_run {
+        let (phrase, _) = phrase::get_or_create()?;
+        println!(
+            "Your security phrase is {phrase}. Every real agentikeys page shows it; never enter keys on a page that doesn't."
+        );
+    } else {
+        println!(
+            "Run `agentikeys phrase` yourself to see your security phrase, which every real agentikeys page shows."
+        );
+    }
+    Ok(())
+}
+
+/// Full path of `program` if it's on PATH.
+fn which(program: &str) -> Option<PathBuf> {
+    std::env::split_paths(&std::env::var_os("PATH")?).map(|d| d.join(program)).find(|p| p.is_file())
+}
+
+fn show_log(n: usize, key: Option<&str>, json: bool) -> Result<()> {
+    let entries = log::read(n, key)?;
+    if entries.is_empty() && !json {
+        println!("No requests logged yet.");
+    }
+    for e in &entries {
+        println!("{}", if json { serde_json::to_string(e)? } else { log::describe(e) });
+    }
+    Ok(())
+}
+
+fn show_phrase(reset: bool) -> Result<()> {
+    use std::io::IsTerminal;
+    if !std::io::stdout().is_terminal() {
+        bail!(
+            "the security phrase is only shown in an interactive terminal, so it never reaches an agent; run `agentikeys phrase` yourself"
+        );
+    }
+    let phrase = if reset { phrase::reset()? } else { phrase::get_or_create()?.0 };
+    println!("Your agentikeys security phrase: {phrase}");
+    println!("Every real agentikeys page shows it. Never enter keys on a page that doesn't.");
+    Ok(())
 }
 
 fn request(
@@ -174,15 +307,24 @@ fn request(
     let (server, exposure) = transport::start(via)?;
     let offers = detecting.join().unwrap_or_default();
     let places = save::Places::new(&spec, file, offers)?;
-    let outcome = web::serve(&spec, &places, server, &exposure, Duration::from_secs(timeout), |url| {
+    let (phrase, phrase_new) = phrase::get_or_create()?;
+    let page = web::Page { spec: &spec, places: &places, phrase: &phrase, phrase_new };
+    let outcome = web::serve(&page, server, &exposure, Duration::from_secs(timeout), |url| {
         let opened = via == Via::Local && !no_open && open_browser(url);
         eprintln!(
             "agentikeys: {} {url}",
-            if opened { "opened this page in the browser on this machine:" } else { "open this link to enter the values:" }
+            if opened {
+                "opened this page in the browser on this machine:"
+            } else {
+                "open this link to enter the values:"
+            }
         );
         if let Some(path) = receipt {
             let note = (via == Via::Tunnel).then(|| transport::TUNNEL_NOTE.to_string());
-            let _ = write_receipt(path, &Receipt { url: Some(url.into()), via: Some(via), note, ..Receipt::status("pending") });
+            let _ = write_receipt(
+                path,
+                &Receipt { url: Some(url.into()), via: Some(via), note, ..Receipt::status("pending") },
+            );
         }
     })?;
     if via == Via::Tunnel {
@@ -191,11 +333,25 @@ fn request(
     }
     drop(exposure);
 
-    Ok(match outcome {
+    let done = match outcome {
         web::Outcome::Saved(keys, saved_to) => Receipt { keys, saved_to, ..Receipt::status("saved") },
         web::Outcome::Cancelled(saved_to) => Receipt { saved_to, ..Receipt::status("cancelled") },
         web::Outcome::TimedOut(saved_to) => Receipt { saved_to, ..Receipt::status("timed_out") },
-    })
+    };
+    let entry = log::Entry {
+        time: log::now(),
+        id: receipt.and_then(|p| p.file_stem()).map(|s| s.to_string_lossy().into_owned()),
+        title: spec.title.clone(),
+        cwd: cwd.display().to_string(),
+        keys: spec.fields.iter().map(|f| f.name.clone()).collect(),
+        via: name(via).into(),
+        status: done.status.clone(),
+        saved_to: done.saved_to.clone(),
+    };
+    if let Err(e) = log::append(&entry) {
+        eprintln!("agentikeys: couldn't write the log: {e:#}");
+    }
+    Ok(done)
 }
 
 fn spawn_detached(spec_text: &str, via: Via, timeout: u64, no_open: bool, cwd: &Path) -> Result<Receipt> {
@@ -246,17 +402,23 @@ fn wait(id: &str, timeout: u64) -> Result<Receipt> {
     }
 }
 
-fn config_path() -> Result<PathBuf> {
+/// agentikeys' own folder: settings, the security phrase and the log.
+pub fn config_dir() -> Result<PathBuf> {
     let base = match std::env::var_os("XDG_CONFIG_HOME").or_else(|| std::env::var_os("APPDATA")) {
         Some(dir) => PathBuf::from(dir),
         None => PathBuf::from(std::env::var_os("HOME").context("HOME isn't set")?).join(".config"),
     };
-    Ok(base.join("agentikeys").join("config.toml"))
+    Ok(base.join("agentikeys"))
+}
+
+fn config_path() -> Result<PathBuf> {
+    Ok(config_dir()?.join("config.toml"))
 }
 
 fn configured_via() -> Result<Via> {
     if let Ok(v) = std::env::var("AGENTIKEYS_VIA") {
-        return Via::from_str(&v, true).map_err(|_| anyhow::anyhow!("AGENTIKEYS_VIA={v} isn't auto, local, tailscale or tunnel"));
+        return Via::from_str(&v, true)
+            .map_err(|_| anyhow::anyhow!("AGENTIKEYS_VIA={v} isn't auto, local, tailscale or tunnel"));
     }
     let path = config_path()?;
     let Ok(text) = fs::read_to_string(&path) else { return Ok(Via::Auto) };

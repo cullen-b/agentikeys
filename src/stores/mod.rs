@@ -41,7 +41,9 @@ impl StoreSpec {
                 "gcp_secret_manager" => StoreSpec::GcpSecretManager(gcp::Options { project: None }),
                 "aws_secrets_manager" => StoreSpec::AwsSecretsManager(Default::default()),
                 "aws_parameter_store" => StoreSpec::AwsParameterStore(Default::default()),
-                "azure_key_vault" => StoreSpec::AzureKeyVault(azure::Options { vault: String::new(), subscription: None }),
+                "azure_key_vault" => {
+                    StoreSpec::AzureKeyVault(azure::Options { vault: String::new(), subscription: None })
+                }
                 _ => return None,
             },
         };

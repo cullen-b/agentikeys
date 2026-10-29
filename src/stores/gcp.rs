@@ -55,10 +55,8 @@ impl Gcp {
 
     fn secret_exists(&self, project: &str, name: &str) -> Result<bool> {
         let args = ["secrets", "describe", name, "--project", project, "--format=value(name)"];
-        let out = self
-            .gcloud(&args)
-            .output()
-            .map_err(|e| anyhow::anyhow!("running `{} secrets describe`: {e}", self.bin))?;
+        let out =
+            self.gcloud(&args).output().map_err(|e| anyhow::anyhow!("running `{} secrets describe`: {e}", self.bin))?;
         if out.status.success() {
             return Ok(true);
         }
@@ -120,8 +118,7 @@ fn detect_with(g: &Gcp) -> Vec<Offer> {
 }
 
 fn validate_name(name: &str) -> Result<()> {
-    let ok = (1..=255).contains(&name.len())
-        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    let ok = (1..=255).contains(&name.len()) && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
     if !ok {
         bail!(
             "`{name}` isn't a valid Secret Manager secret ID: use 1-255 letters, digits, `-` or `_` \
@@ -174,10 +171,7 @@ impl SecretStore for Gcp {
             let create = ["secrets", "create", name, "--project", project, "--replication-policy=automatic"];
             run(self.gcloud(&create), None, None)?;
         }
-        let add = [
-            "secrets", "versions", "add", name, "--project", project, "--data-file=-",
-            "--format=value(name)",
-        ];
+        let add = ["secrets", "versions", "add", name, "--project", project, "--data-file=-", "--format=value(name)"];
         let out = run(self.gcloud(&add), Some(value), Some(value))?;
         let reference = out.trim();
         if reference.is_empty() {

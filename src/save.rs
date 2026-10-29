@@ -10,6 +10,32 @@ use std::collections::BTreeMap;
 
 pub const FILE: &str = "file";
 
+/// Field name -> value, overwritten with zeros when dropped. Best effort: copies made inside serde,
+/// the CLIs and the OS (pipe buffers) are out of reach.
+#[derive(Default, Deserialize)]
+#[serde(transparent)]
+pub struct Secrets(BTreeMap<String, String>);
+
+impl std::ops::Deref for Secrets {
+    type Target = BTreeMap<String, String>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Secrets {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Drop for Secrets {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.0.values_mut().for_each(Zeroize::zeroize);
+    }
+}
+
 /// Everything the user can pick from, worked out before the page opens.
 pub struct Places {
     pub file: Option<FilePlan>,
@@ -53,7 +79,11 @@ impl Places {
             && !offers.iter().any(|o| o.kind == s.kind())
         {
             let service = s.backend().describe().0;
-            offers.push(Offer::unavailable(s.kind(), service, "Its command-line tool isn't installed on this computer"));
+            offers.push(Offer::unavailable(
+                s.kind(),
+                service,
+                "Its command-line tool isn't installed on this computer",
+            ));
         }
         let places = Places { file, offers };
         if places.file.is_none() && places.offers.iter().all(|o| places.view(spec, o).problem.is_some()) {
@@ -125,13 +155,18 @@ impl Places {
                 self.file.as_ref().ok_or_else(|| anyhow!("There's no file to save to."))?;
                 continue;
             }
-            let offer = self.offers.iter().find(|o| o.kind == pick.id).ok_or_else(|| anyhow!("Unknown place {}.", pick.id))?;
+            let offer =
+                self.offers.iter().find(|o| o.kind == pick.id).ok_or_else(|| anyhow!("Unknown place {}.", pick.id))?;
             let view = self.view(spec, offer);
             if let Some(problem) = &view.problem {
                 bail!("{}: {problem}", offer.service);
             }
             if offer.choice_label.is_some() && !pick.choice.as_ref().is_some_and(|c| view.choices.contains(c)) {
-                bail!("Pick one of the listed {}s for {}.", offer.choice_label.unwrap_or("target").to_lowercase(), offer.service);
+                bail!(
+                    "Pick one of the listed {}s for {}.",
+                    offer.choice_label.unwrap_or("target").to_lowercase(),
+                    offer.service
+                );
             }
             let chosen = StoreSpec::chosen(&pick.id, pick.choice.as_deref(), spec.destination.store.as_ref())
                 .ok_or_else(|| anyhow!("Unknown place {}.", pick.id))?;
@@ -142,7 +177,8 @@ impl Places {
             stores.push((pick, backend));
         }
 
-        let keys: Vec<String> = spec.fields.iter().filter(|f| values.contains_key(&f.name)).map(|f| f.name.clone()).collect();
+        let keys: Vec<String> =
+            spec.fields.iter().filter(|f| values.contains_key(&f.name)).map(|f| f.name.clone()).collect();
         let mut outcome = Outcome { saved: Vec::new(), failed: Vec::new() };
         for (pick, backend) in &stores {
             let (service, location) = backend.describe();
@@ -211,7 +247,8 @@ mod tests {
     use super::*;
 
     fn spec(destination: &str) -> Spec {
-        Spec::parse(&format!(r#"{{"title":"t","fields":[{{"name":"STRIPE_KEY"}}],"destination":{destination}}}"#)).unwrap()
+        Spec::parse(&format!(r#"{{"title":"t","fields":[{{"name":"STRIPE_KEY"}}],"destination":{destination}}}"#))
+            .unwrap()
     }
 
     fn vault_offer(choices: &[&str]) -> Offer {

@@ -50,9 +50,9 @@ impl Opener {
         let iv = B64.decode(&sealed.iv).map_err(|_| bad())?;
         let ct = B64.decode(&sealed.ct).map_err(|_| bad())?;
         let shared = p256::ecdh::diffie_hellman(self.secret.to_nonzero_scalar(), epk.as_affine());
-        let mut key = [0u8; 32];
-        shared.extract::<sha2::Sha256>(None).expand(INFO, &mut key).map_err(|_| bad())?;
-        let cipher = Aes256Gcm::new_from_slice(&key).map_err(|_| bad())?;
+        let mut key = zeroize::Zeroizing::new([0u8; 32]);
+        shared.extract::<sha2::Sha256>(None).expand(INFO, key.as_mut()).map_err(|_| bad())?;
+        let cipher = Aes256Gcm::new_from_slice(key.as_ref()).map_err(|_| bad())?;
         let nonce = Nonce::try_from(iv.as_slice()).map_err(|_| bad())?;
         cipher.decrypt(&nonce, Payload { msg: &ct, aad }).map_err(|_| bad())
     }
@@ -61,6 +61,12 @@ impl Opener {
 /// Symmetric key for page data and replies; travels in the link's #fragment, which browsers never send.
 pub struct ViewKey {
     key: [u8; 32],
+}
+
+impl Drop for ViewKey {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.key);
+    }
 }
 
 impl ViewKey {
