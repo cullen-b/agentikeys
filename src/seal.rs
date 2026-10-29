@@ -1,5 +1,8 @@
-//! End-to-end encryption for values sent through a tunnel: ECDH P-256 -> HKDF-SHA256 -> AES-256-GCM.
-//! The browser side lives in form.html and must stay in step with this.
+//! End-to-end encryption between the browser and agentikeys. The browser side lives in form.html and
+//! must stay in step with this.
+//! - Values the user submits: ECDH P-256 -> HKDF-SHA256 -> AES-256-GCM to a one-time key, so they stay
+//!   private even from someone holding the link.
+//! - Everything else (page data, replies): AES-256-GCM under a one-time view key carried in the link.
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
@@ -8,6 +11,7 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use p256::{PublicKey, SecretKey};
 use serde::Deserialize;
+use serde_json::{Value, json};
 
 const INFO: &[u8] = b"agentikeys v1";
 
@@ -54,6 +58,35 @@ impl Opener {
     }
 }
 
+/// Symmetric key for page data and replies; travels in the link's #fragment, which browsers never send.
+pub struct ViewKey {
+    key: [u8; 32],
+}
+
+impl ViewKey {
+    pub fn new() -> Result<ViewKey> {
+        let mut key = [0u8; 32];
+        getrandom::fill(&mut key).map_err(|e| anyhow!("no randomness: {e}"))?;
+        Ok(ViewKey { key })
+    }
+
+    pub fn fragment(&self) -> String {
+        B64.encode(self.key)
+    }
+
+    /// `{"iv": ..., "ct": ...}`, base64url; `aad` binds it to this request.
+    pub fn seal(&self, plaintext: &[u8], aad: &[u8]) -> Result<Value> {
+        let mut iv = [0u8; 12];
+        getrandom::fill(&mut iv).map_err(|e| anyhow!("no randomness: {e}"))?;
+        let nonce = Nonce::try_from(&iv[..]).expect("12 bytes");
+        let ct = Aes256Gcm::new_from_slice(&self.key)
+            .expect("32-byte key")
+            .encrypt(&nonce, Payload { msg: plaintext, aad })
+            .map_err(|_| anyhow!("couldn't encrypt the reply"))?;
+        Ok(json!({"iv": B64.encode(iv), "ct": B64.encode(ct)}))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -69,6 +102,21 @@ mod tests {
         let nonce = Nonce::try_from(&iv[..]).unwrap();
         let ct = Aes256Gcm::new_from_slice(&key).unwrap().encrypt(&nonce, Payload { msg: plaintext, aad }).unwrap();
         Sealed { epk: eph.public_key(), iv: B64.encode(iv), ct: B64.encode(ct) }
+    }
+
+    #[test]
+    fn view_key_seals_with_fresh_nonces_and_binds_aad() {
+        let view = ViewKey::new().unwrap();
+        let (a, b) = (view.seal(b"hi", b"t").unwrap(), view.seal(b"hi", b"t").unwrap());
+        assert_ne!(a["iv"], b["iv"]);
+        let open = |v: &Value, aad: &[u8]| {
+            let iv = B64.decode(v["iv"].as_str().unwrap()).unwrap();
+            let ct = B64.decode(v["ct"].as_str().unwrap()).unwrap();
+            let nonce = Nonce::try_from(&iv[..]).unwrap();
+            Aes256Gcm::new_from_slice(&view.key).unwrap().decrypt(&nonce, Payload { msg: &ct, aad })
+        };
+        assert_eq!(open(&a, b"t").unwrap(), b"hi");
+        assert!(open(&a, b"other").is_err());
     }
 
     #[test]

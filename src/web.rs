@@ -1,6 +1,6 @@
 //! One-shot page that collects the values, behind a random token. `transport` decides where it listens.
 
-use crate::seal::{Opener, Sealed};
+use crate::seal::{Opener, Sealed, ViewKey};
 use crate::spec::Spec;
 use crate::save::{Pick, Places, SavedTo};
 use crate::transport::{Exposure, TUNNEL_NOTE, Via};
@@ -48,13 +48,21 @@ pub fn serve(
     let token = random_hex(32)?;
     let nonce = random_hex(16)?;
     let opener = if exposure.encrypt { Some(Opener::new()?) } else { None };
-    let page = render(spec, places, exposure, &nonce);
+    let view = if exposure.encrypt { Some(ViewKey::new()?) } else { None };
+    let page = render(spec, places, exposure, &nonce, view.as_ref(), token.as_bytes())?;
+    let reply = |req: Request, status: u16, body: serde_json::Value| match &view {
+        Some(v) => match v.seal(body.to_string().as_bytes(), token.as_bytes()) {
+            Ok(sealed) => respond_json(req, status, json!({"sealed": sealed})),
+            Err(_) => respond_json(req, 500, json!({})),
+        },
+        None => respond_json(req, status, body),
+    };
     let mut saved: Vec<SavedTo> = Vec::new();
     let base = format!("/{token}");
 
     let mut url = format!("{}{base}", exposure.public_origin);
-    if let Some(o) = &opener {
-        url.push_str(&format!("#k={}", o.public_key()));
+    if let (Some(o), Some(v)) = (&opener, &view) {
+        url.push_str(&format!("#k={}&v={}", o.public_key(), v.fragment()));
     }
     on_ready(&url);
 
@@ -82,7 +90,7 @@ pub fn serve(
                     continue;
                 }
                 if u.ends_with("/cancel") {
-                    respond_json(req, 200, json!({"ok": true}));
+                    reply(req, 200, json!({"ok": true}));
                     return Ok(Outcome::Cancelled(saved));
                 }
                 let submission = read_json::<Body>(&mut req)
@@ -91,14 +99,14 @@ pub fn serve(
                 let (values, picks) = match submission {
                     Ok(v) => v,
                     Err(e) => {
-                        respond_json(req, 400, json!({"error": e.to_string()}));
+                        reply(req, 400, json!({"error": e.to_string()}));
                         continue;
                     }
                 };
                 let outcome = match places.save(spec, &picks, &values) {
                     Ok(o) => o,
                     Err(e) => {
-                        respond_json(req, 400, json!({"error": format!("{e:#}")}));
+                        reply(req, 400, json!({"error": format!("{e:#}")}));
                         continue;
                     }
                 };
@@ -111,12 +119,12 @@ pub fn serve(
                 saved.extend(outcome.saved);
                 if outcome.failed.is_empty() {
                     let names: Vec<String> = values.into_keys().collect();
-                    respond_json(req, 200, json!({"saved": names, "done": done}));
+                    reply(req, 200, json!({"saved": names, "done": done}));
                     return Ok(Outcome::Saved(names, saved));
                 }
                 // Keep going so the user can retry or untick the place that failed.
                 let error = format!("Couldn't save to {}", outcome.failed.join("; "));
-                respond_json(req, 500, json!({"error": error, "done": done}));
+                reply(req, 500, json!({"error": error, "done": done}));
             }
             _ => respond(req, 404, "text/plain", "not found".into(), None),
         }
@@ -153,7 +161,8 @@ fn collect(spec: &Spec, s: Submission) -> Result<(BTreeMap<String, String>, Vec<
     Ok((out, s.places))
 }
 
-fn render(spec: &Spec, places: &Places, exposure: &Exposure, nonce: &str) -> String {
+/// The page. With a view key, its data is sealed so the network only ever sees the generic page code.
+fn render(spec: &Spec, places: &Places, exposure: &Exposure, nonce: &str, view: Option<&ViewKey>, aad: &[u8]) -> Result<String> {
     let data = json!({
         "title": spec.title,
         "reason": spec.reason,
@@ -165,6 +174,10 @@ fn render(spec: &Spec, places: &Places, exposure: &Exposure, nonce: &str) -> Str
             "placeholder": f.placeholder, "pattern": f.pattern, "help_url": f.help_url,
         })).collect::<Vec<_>>(),
     });
+    let data = match view {
+        Some(v) => json!({"sealed": v.seal(data.to_string().as_bytes(), aad)?}),
+        None => data,
+    };
     // Escape so agent-supplied strings can't close the <script> block.
     let data = data
         .to_string()
@@ -173,7 +186,7 @@ fn render(spec: &Spec, places: &Places, exposure: &Exposure, nonce: &str) -> Str
         .replace('&', "\\u0026")
         .replace('\u{2028}', "\\u2028")
         .replace('\u{2029}', "\\u2029");
-    FORM.replace("__NONCE__", nonce).replace("__DATA__", &data)
+    Ok(FORM.replace("__NONCE__", nonce).replace("__DATA__", &data))
 }
 
 fn tilde(path: &str) -> String {

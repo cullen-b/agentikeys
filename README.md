@@ -93,10 +93,23 @@ still list `saved_to` if some places were saved before the user stopped.
 | `auto` (default) | `local`, or over SSH `tailscale` if it's running, else `tunnel` | |
 
 Set a default once with `agentikeys config via tailscale` (or `AGENTIKEYS_VIA`); `--via` overrides
-both. In tunnel mode the link's `#k=` fragment carries a one-time P-256 public key that browsers never
-send to servers; the page encrypts the values (ECDH → HKDF-SHA256 → AES-256-GCM, bound to the link)
-before sending, so Cloudflare relays only ciphertext. Cloudflare does serve the page itself, so tunnel
-mode trusts Cloudflare not to alter it; Tailscale avoids that. The tunnel closes when the request ends.
+both. The tunnel closes when the request ends.
+
+### Encryption
+
+In `local` and `tunnel` mode everything between the browser and agentikeys is encrypted, on top of
+HTTPS. The link's `#` fragment, which browsers never send to any server, carries two one-time keys:
+
+- `k`, a P-256 public key: the values you type are sealed to it (ECDH → HKDF-SHA256 → AES-256-GCM),
+  so they stay private even from someone who has the link.
+- `v`, a view key: the page's data (title, fields, places, your account and project names) and
+  every reply are sealed with it (AES-256-GCM).
+
+Both are bound to the link's token. A network observer (including Cloudflare in tunnel mode) sees
+only the generic page code, the random path, ciphertext and status codes. Cloudflare serves that
+page code, so tunnel mode still trusts it not to alter the code; Tailscale avoids that. In
+`tailscale` mode the page isn't encrypted again: browsers only allow WebCrypto on HTTPS or
+localhost, and WireGuard already encrypts the traffic end to end between your devices.
 
 ## Secret stores
 
