@@ -77,6 +77,7 @@ footer { border-top: 1px solid var(--line); margin-top: 24px; padding-top: 18px;
 footer p { font-size: 13px; color: var(--muted); margin: 0 0 16px; }
 footer p.note { margin-bottom: 10px; }
 footer a { color: var(--accent); text-underline-offset: 2px; }
+footer code { font-family: var(--mono); font-size: 12px; }
 .actions { display: flex; justify-content: flex-end; gap: 10px; }
 .done h1 { margin-bottom: 6px; }
 .done p { color: var(--muted); margin: 0; }
@@ -210,7 +211,7 @@ function render() {
       const saved = res.body.saved.length;
       finish("Saved", `${saved === 1 ? "1 key" : saved + " keys"} written to ${DATA.path}. You can close this tab and go back to your chat.`);
     } else {
-      banner.textContent = res.body.error || "Couldn't save. Check the terminal running agentikeys.";
+      banner.textContent = res.body.error || "The connection dropped before agentikeys confirmed the save. Your agent can check whether it went through.";
       banner.hidden = false;
       save.textContent = label;
       save.disabled = cancel.disabled = false;
@@ -236,13 +237,16 @@ function render() {
   inputs[0].input.focus();
 }
 
-// Tunnel note, with the Tailscale link made clickable.
+// Tunnel note: `code` spans and the Tailscale link rendered properly.
 function noteEl() {
   const p = el("p", { class: "note" });
-  const url = "https://tailscale.com/download";
-  const [before, after] = DATA.note.split(url);
-  p.append(before);
-  if (after !== undefined) p.append(el("a", { href: url, target: "_blank", rel: "noopener noreferrer", text: "Tailscale" }), after);
+  const link = "Tailscale (https://tailscale.com/download)";
+  for (const part of DATA.note.split(/(`[^`]+`)/)) {
+    if (part.startsWith("`")) { p.append(el("code", { text: part.slice(1, -1) })); continue; }
+    const [before, after] = part.split(link);
+    p.append(before);
+    if (after !== undefined) p.append(el("a", { href: "https://tailscale.com/download", target: "_blank", rel: "noopener noreferrer", text: "Tailscale" }), after);
+  }
   return p;
 }
 

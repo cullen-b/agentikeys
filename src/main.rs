@@ -183,6 +183,10 @@ fn request(
             let _ = write_receipt(path, &Receipt { url: Some(url.into()), via: Some(via), note, ..Receipt::status("pending") });
         }
     })?;
+    if via == Via::Tunnel {
+        // Let the final response finish its trip back through Cloudflare before the tunnel closes.
+        std::thread::sleep(Duration::from_secs(3));
+    }
     drop(exposure);
 
     let path = Some(plan.path.display().to_string());
