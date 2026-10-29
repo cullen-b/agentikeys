@@ -6,16 +6,17 @@ Get secrets from a human into the right place without them ever passing through 
 
 When an agent needs an API key, the usual flow is "paste it here". The key then lives in the chat
 transcript, the provider's logs, synced chat history, and sometimes a commit. agentikeys replaces the
-paste with a one-shot local page: the agent describes *what* it needs and *where* it goes, a page
-opens in the user's browser on its own, the user enters the values, and agentikeys writes them. The
-agent only gets back a receipt.
+paste with a one-shot page: the agent describes *what* it needs and *where* it goes, agentikeys
+gives it a link to post in chat (and opens it in the browser when the user is at the machine), the
+user enters the values, and agentikeys writes them. The agent only gets back a receipt.
 
 ## How it works
 
 1. The agent runs `agentikeys request` with a JSON spec (no secret values in it).
 2. agentikeys checks everything first: the spec, that the destination parses, and that the file
-   isn't tracked by git. Only then does it start a server on `127.0.0.1` (random port, random
-   256-bit token in the URL) and open the page in the default browser.
+   isn't tracked by git. Only then does it start a one-shot server (random port, random 256-bit
+   token in the URL) reachable the way the user picked (see [Reaching the user](#reaching-the-user)),
+   and prints the link.
 3. The page is built from a fixed template; agent-supplied text is only ever inserted as text. It
    shows where the values will be saved and whether the file will be gitignored.
 4. On submit, agentikeys adds the file to `.gitignore` if needed, upserts the values (other entries
@@ -31,9 +32,9 @@ cargo install --path .
 ## Usage
 
 ```sh
-agentikeys request spec.json          # or pipe the spec on stdin
-agentikeys request --detach < spec.json   # returns an id straight away
-agentikeys wait <id> --timeout 60         # blocks until saved/cancelled, or reports pending
+agentikeys request < spec.json        # prints {"status":"pending","id":…,"url":…} straight away
+agentikeys wait <id> --timeout 60     # blocks until saved/cancelled/timed out, or reports pending
+agentikeys request --foreground spec.json   # or block until the user is done
 ```
 
 Spec:
@@ -67,10 +68,25 @@ Receipt (stdout, one JSON line):
 | `error` (see `error`) | 1 |
 | `cancelled` | 2 |
 | `timed_out` (default 600 s, `--timeout`) | 3 |
-| `pending` (detached, still waiting) | 4 |
+| `pending` from `wait` (still waiting) | 4 |
 
-Over SSH or anywhere without a browser, use `--no-open`: the URL is printed to stderr (and included
-in the `--detach` receipt) so the user can open it.
+`request` itself exits 0 with `pending` once the link is ready. A pending receipt may carry a
+`note` for the user (e.g. the tunnel's Tailscale suggestion).
+
+## Reaching the user
+
+| `--via` | Page is served on | Use when |
+|---|---|---|
+| `local` | `127.0.0.1`, opened in this machine's browser | you're at the machine |
+| `tailscale` | this machine's Tailscale address only | you're on another device in your tailnet |
+| `tunnel` | a temporary `*.trycloudflare.com` quick tunnel (needs `cloudflared`, no account) | anywhere else |
+| `auto` (default) | `local`, or over SSH `tailscale` if it's running, else `tunnel` | |
+
+Set a default once with `agentikeys config via tailscale` (or `AGENTIKEYS_VIA`); `--via` overrides
+both. In tunnel mode the link's `#k=` fragment carries a one-time P-256 public key that browsers never
+send to servers; the page encrypts the values (ECDH → HKDF-SHA256 → AES-256-GCM, bound to the link)
+before sending, so Cloudflare relays only ciphertext. Cloudflare does serve the page itself, so tunnel
+mode trusts Cloudflare not to alter it; Tailscale avoids that. The tunnel closes when the request ends.
 
 ## Instructions for agents
 
@@ -79,9 +95,12 @@ Paste into `AGENTS.md`, `CLAUDE.md` or your harness's equivalent:
 ```md
 ## Secrets
 Never ask the user to paste an API key, token or password into chat. Instead run
-`agentikeys request --detach` with a JSON spec on stdin describing the fields and the destination
-file, tell the user a page has opened in their browser, then run `agentikeys wait <id>` until the
-status is no longer `pending`. Never read the destination file back or print its contents.
+`agentikeys request` with a JSON spec on stdin describing the fields and the destination file. Post
+the returned `url` in chat as a link for the user to open in their own browser, along with any
+`note`. Never open the link yourself, including in a built-in or automated browser. Then run
+`agentikeys wait <id>` until the status is no longer `pending`. Never read the destination file
+back or print its contents. If the user isn't at this machine, use `--via tailscale` (or
+`--via tunnel` if they don't use Tailscale).
 ```
 
 ## Threat model

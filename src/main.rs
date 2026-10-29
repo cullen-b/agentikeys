@@ -1,9 +1,11 @@
+mod seal;
 mod spec;
 mod store;
+mod transport;
 mod web;
 
 use anyhow::{Context, Result, bail};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
 use spec::Spec;
 use std::fs;
@@ -12,8 +14,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::time::{Duration, Instant};
 use store::GitStatus;
+use transport::Via;
 
-/// Collect secrets from the user in a local browser page and write them to a file, without the agent seeing them.
+/// Collect secrets from the user in a browser page and write them to a file, without the agent seeing them.
 #[derive(Parser)]
 #[command(version)]
 struct Cli {
@@ -23,19 +26,23 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Ask the user for values described by a JSON spec (file path, or `-` for stdin) and save them.
+    /// Ask the user for values described by a JSON spec (file path, or `-` for stdin). Prints the link and an id
+    /// straight away; collect the result with `agentikeys wait <id>`.
     Request {
         #[arg(default_value = "-")]
         spec: String,
+        /// How the page reaches the user. Defaults to AGENTIKEYS_VIA, then `agentikeys config via`, then auto.
+        #[arg(long, value_enum)]
+        via: Option<Via>,
         /// Seconds to wait for the user before giving up.
         #[arg(long, default_value_t = 600)]
         timeout: u64,
-        /// Don't open the browser; just print the URL (e.g. over SSH).
+        /// Don't open this machine's browser (local mode); just print the link.
         #[arg(long)]
         no_open: bool,
-        /// Return immediately with an id; poll it with `agentikeys wait <id>`.
+        /// Block until the user is done instead of returning straight away.
         #[arg(long)]
-        detach: bool,
+        foreground: bool,
         #[arg(long, hide = true)]
         receipt: Option<PathBuf>,
     },
@@ -45,6 +52,20 @@ enum Cmd {
         /// Seconds to wait before reporting it as still pending.
         #[arg(long, default_value_t = 60)]
         timeout: u64,
+    },
+    /// Show settings, or set how pages reach you by default (`agentikeys config via tailscale`).
+    Config {
+        #[command(subcommand)]
+        set: Option<ConfigSet>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ConfigSet {
+    /// Default transport: auto, local, tailscale or tunnel.
+    Via {
+        #[arg(value_enum)]
+        via: Via,
     },
 }
 
@@ -56,6 +77,11 @@ struct Receipt {
     id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    via: Option<Via>,
+    /// Something to pass on to the user.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -90,20 +116,40 @@ impl Receipt {
 
 fn main() -> ExitCode {
     let receipt = match Cli::parse().command {
-        Cmd::Request { spec, timeout, no_open, detach, receipt } => {
-            let r = request(&spec, timeout, no_open, detach, receipt.as_deref()).unwrap_or_else(Receipt::error);
+        Cmd::Request { spec, via, timeout, no_open, foreground, receipt } => {
+            let r = request(&spec, via, timeout, no_open, foreground, receipt.as_deref()).unwrap_or_else(Receipt::error);
             if let Some(path) = &receipt {
                 let _ = write_receipt(path, &r);
+            }
+            if r.status == "pending" {
+                println!("{}", serde_json::to_string(&r).expect("receipt serializes"));
+                return ExitCode::SUCCESS;
             }
             r
         }
         Cmd::Wait { id, timeout } => wait(&id, timeout).unwrap_or_else(Receipt::error),
+        Cmd::Config { set } => {
+            return match config(set) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("agentikeys: {e:#}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
     };
     println!("{}", serde_json::to_string(&receipt).expect("receipt serializes"));
     receipt.exit_code()
 }
 
-fn request(spec_arg: &str, timeout: u64, no_open: bool, detach: bool, receipt: Option<&Path>) -> Result<Receipt> {
+fn request(
+    spec_arg: &str,
+    via: Option<Via>,
+    timeout: u64,
+    no_open: bool,
+    foreground: bool,
+    receipt: Option<&Path>,
+) -> Result<Receipt> {
     let text = if spec_arg == "-" {
         let mut s = String::new();
         std::io::stdin().read_to_string(&mut s).context("reading spec from stdin")?;
@@ -115,20 +161,29 @@ fn request(spec_arg: &str, timeout: u64, no_open: bool, detach: bool, receipt: O
     let cwd = std::env::current_dir()?;
     let plan = store::plan(&spec, &cwd)?;
 
-    if detach {
-        return spawn_detached(&text, timeout, no_open, &cwd);
+    let via = match via {
+        Some(v) => v,
+        None => configured_via()?,
+    }
+    .resolve();
+
+    if !foreground {
+        return spawn_detached(&text, via, timeout, no_open, &cwd);
     }
 
-    let outcome = web::serve(&spec, &plan, Duration::from_secs(timeout), |url| {
-        if !no_open && open_browser(url) {
-            eprintln!("agentikeys: opened a page in your browser; waiting for you to fill it in.");
-        } else {
-            eprintln!("agentikeys: open this link to enter the values: {url}");
-        }
+    let (server, exposure) = transport::start(via)?;
+    let outcome = web::serve(&spec, &plan, server, &exposure, Duration::from_secs(timeout), |url| {
+        let opened = via == Via::Local && !no_open && open_browser(url);
+        eprintln!(
+            "agentikeys: {} {url}",
+            if opened { "opened this page in the browser on this machine:" } else { "open this link to enter the values:" }
+        );
         if let Some(path) = receipt {
-            let _ = write_receipt(path, &Receipt { url: Some(url.into()), ..Receipt::status("pending") });
+            let note = (via == Via::Tunnel).then(|| transport::TUNNEL_NOTE.to_string());
+            let _ = write_receipt(path, &Receipt { url: Some(url.into()), via: Some(via), note, ..Receipt::status("pending") });
         }
     })?;
+    drop(exposure);
 
     let path = Some(plan.path.display().to_string());
     Ok(match outcome {
@@ -151,7 +206,7 @@ fn request(spec_arg: &str, timeout: u64, no_open: bool, detach: bool, receipt: O
     })
 }
 
-fn spawn_detached(spec_text: &str, timeout: u64, no_open: bool, cwd: &Path) -> Result<Receipt> {
+fn spawn_detached(spec_text: &str, via: Via, timeout: u64, no_open: bool, cwd: &Path) -> Result<Receipt> {
     let dir = state_dir()?;
     let id = web::random_hex(8)?;
     let spec_path = dir.join(format!("{id}.spec.json"));
@@ -159,7 +214,8 @@ fn spawn_detached(spec_text: &str, timeout: u64, no_open: bool, cwd: &Path) -> R
     fs::write(&spec_path, spec_text)?;
 
     let mut cmd = Command::new(std::env::current_exe()?);
-    cmd.arg("request").arg(&spec_path).arg("--timeout").arg(timeout.to_string());
+    cmd.arg("request").arg(&spec_path).arg("--foreground").arg("--timeout").arg(timeout.to_string());
+    cmd.arg("--via").arg(name(via));
     cmd.arg("--receipt").arg(&receipt_path).current_dir(cwd);
     if no_open {
         cmd.arg("--no-open");
@@ -170,9 +226,9 @@ fn spawn_detached(spec_text: &str, timeout: u64, no_open: bool, cwd: &Path) -> R
     std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
     cmd.spawn().context("starting background request")?;
 
-    // Wait briefly for the URL so the agent can pass it on if the browser didn't open.
+    // Wait for the link (a tunnel can take a while) so the agent can post it in chat.
     let started = Instant::now();
-    while started.elapsed() < Duration::from_secs(5) {
+    while started.elapsed() < Duration::from_secs(60) {
         if let Some(r) = read_receipt(&receipt_path) {
             let _ = fs::remove_file(&spec_path);
             return Ok(Receipt { id: Some(id), ..r });
@@ -195,6 +251,55 @@ fn wait(id: &str, timeout: u64) -> Result<Receipt> {
             None if done => bail!("no request with id {id}"),
             _ => std::thread::sleep(Duration::from_millis(250)),
         }
+    }
+}
+
+fn config_path() -> Result<PathBuf> {
+    let base = match std::env::var_os("XDG_CONFIG_HOME").or_else(|| std::env::var_os("APPDATA")) {
+        Some(dir) => PathBuf::from(dir),
+        None => PathBuf::from(std::env::var_os("HOME").context("HOME isn't set")?).join(".config"),
+    };
+    Ok(base.join("agentikeys").join("config.toml"))
+}
+
+fn configured_via() -> Result<Via> {
+    if let Ok(v) = std::env::var("AGENTIKEYS_VIA") {
+        return Via::from_str(&v, true).map_err(|_| anyhow::anyhow!("AGENTIKEYS_VIA={v} isn't auto, local, tailscale or tunnel"));
+    }
+    let path = config_path()?;
+    let Ok(text) = fs::read_to_string(&path) else { return Ok(Via::Auto) };
+    let doc: toml_edit::DocumentMut = text.parse().with_context(|| format!("reading {}", path.display()))?;
+    match doc.get("via").and_then(|v| v.as_str()) {
+        Some(v) => Via::from_str(v, true).map_err(|_| anyhow::anyhow!("{}: via = {v:?} isn't valid", path.display())),
+        None => Ok(Via::Auto),
+    }
+}
+
+fn config(set: Option<ConfigSet>) -> Result<()> {
+    let path = config_path()?;
+    match set {
+        None => {
+            let via = configured_via()?;
+            println!("via = {} (resolves to {} here)", name(via), name(via.resolve()));
+            println!("config file: {}", path.display());
+        }
+        Some(ConfigSet::Via { via }) => {
+            let mut doc: toml_edit::DocumentMut = fs::read_to_string(&path).unwrap_or_default().parse()?;
+            doc["via"] = toml_edit::value(name(via));
+            fs::create_dir_all(path.parent().expect("has parent"))?;
+            fs::write(&path, doc.to_string())?;
+            println!("agentikeys will reach you via {} by default ({})", name(via), path.display());
+        }
+    }
+    Ok(())
+}
+
+fn name(via: Via) -> &'static str {
+    match via {
+        Via::Auto => "auto",
+        Via::Local => "local",
+        Via::Tailscale => "tailscale",
+        Via::Tunnel => "tunnel",
     }
 }
 
