@@ -22,8 +22,9 @@ pub enum Via {
     Tunnel,
 }
 
-pub const TUNNEL_NOTE: &str = "This link goes through a temporary Cloudflare tunnel. Values are encrypted in the \
-browser before they're sent, so the tunnel only carries encrypted data. For a direct, private connection, consider \
+pub const TUNNEL_NOTE: &str = "This link goes through a temporary Cloudflare tunnel. Everything on the page and \
+everything you send is encrypted between your browser and agentikeys, so the tunnel only carries encrypted data. \
+For a direct, private connection, consider \
 setting up Tailscale (https://tailscale.com/download) and running `agentikeys config via tailscale`. The tunnel \
 keeps working if you'd rather not.";
 
@@ -35,7 +36,8 @@ pub struct Exposure {
     pub hosts: Vec<String>,
     /// Origin header values the server accepts on POST.
     pub origins: Vec<String>,
-    /// Values must arrive encrypted (the transport isn't end-to-end private).
+    /// Encrypt page data, replies and values in the browser. Off only for Tailscale: browsers won't run
+    /// WebCrypto on a plain-http tailnet address, and WireGuard already encrypts it end to end.
     pub encrypt: bool,
     tunnel: Option<Child>,
 }
@@ -79,7 +81,7 @@ pub fn start(via: Via) -> Result<(Server, Exposure)> {
             public_origin: format!("http://{local}"),
             origins: vec![format!("http://{local}")],
             hosts: vec![local],
-            encrypt: false,
+            encrypt: true,
             tunnel: None,
         },
         Via::Tailscale => {

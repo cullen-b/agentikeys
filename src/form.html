@@ -105,7 +105,9 @@ footer a { color: var(--accent); text-underline-offset: 2px; }
 <script type="application/json" id="data">__DATA__</script>
 <script nonce="__NONCE__">
 "use strict";
-const DATA = JSON.parse(document.getElementById("data").textContent);
+// Page data arrives sealed under the link's view key (except on Tailscale); see boot() at the bottom.
+const RAW = JSON.parse(document.getElementById("data").textContent);
+let DATA;
 const app = document.getElementById("app");
 const ICON_KEY = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="15" r="4"/><path d="M10.8 12.2 20 3m-4 4 3 3m-6-1 2 2"/></svg>';
 
@@ -243,13 +245,6 @@ function render() {
   app.append(brand, el("h1", { text: DATA.title }));
   if (DATA.reason) app.append(el("p", { class: "reason", text: DATA.reason }));
   app.append(banner, form);
-  if (DATA.encrypt && (!hostKey() || !window.crypto || !crypto.subtle)) {
-    banner.textContent = hostKey()
-      ? "This browser can't encrypt the values. Try a current version of Chrome, Safari, Firefox or Edge."
-      : "This link is missing its key. Copy the whole link from your chat, including the part after #.";
-    banner.hidden = false;
-    save.disabled = true;
-  }
   inputs[0].input.focus();
 }
 
@@ -321,9 +316,19 @@ const b64u = {
   dec: (s) => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4)), (c) => c.charCodeAt(0)),
 };
 
-function hostKey() {
-  const m = /(?:^#|&)k=([A-Za-z0-9_-]+)/.exec(location.hash);
+// Keys from the link's #fragment: k = agentikeys' public key (for values), v = the view key (everything else).
+function linkParam(name) {
+  const m = new RegExp(`(?:^#|&)${name}=([A-Za-z0-9_-]+)`).exec(location.hash);
   return m ? m[1] : null;
+}
+const hostKey = () => linkParam("k");
+
+// AES-256-GCM under the view key, bound to this link's token. Mirrors ViewKey in src/seal.rs.
+async function openView(box) {
+  const key = await crypto.subtle.importKey("raw", b64u.dec(linkParam("v")), "AES-GCM", false, ["decrypt"]);
+  const aad = new TextEncoder().encode(location.pathname.slice(1));
+  const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: b64u.dec(box.iv), additionalData: aad }, key, b64u.dec(box.ct));
+  return JSON.parse(new TextDecoder().decode(plain));
 }
 
 // ECDH P-256 -> HKDF-SHA256 -> AES-256-GCM, bound to this link's token. Mirrors src/seal.rs.
@@ -349,7 +354,9 @@ async function post(action, body) {
     const r = await fetch(`${location.pathname}/${action}`, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
     });
-    return { ok: r.ok, body: await r.json().catch(() => ({})) };
+    let reply = await r.json().catch(() => ({}));
+    if (reply.sealed) reply = await openView(reply.sealed).catch(() => ({}));
+    return { ok: r.ok, body: reply };
   } catch {
     return { ok: false, body: { error: "agentikeys stopped. Ask your agent to start a new request." } };
   }
@@ -361,7 +368,29 @@ function finish(title, text) {
   window.close();
 }
 
-render();
+async function boot() {
+  if (!RAW.sealed) {
+    DATA = RAW;
+    return render();
+  }
+  const problem = !linkParam("k") || !linkParam("v")
+    ? "This link is missing its key. Copy the whole link from your chat, including the part after #."
+    : !window.crypto || !crypto.subtle
+      ? "This browser can't decrypt this page. Try a current version of Chrome, Safari, Firefox or Edge."
+      : null;
+  if (!problem) {
+    try {
+      DATA = await openView(RAW.sealed);
+      return render();
+    } catch {}
+  }
+  app.replaceChildren(el("p", { class: "banner", role: "alert",
+    text: problem || "This link is damaged or incomplete. Copy the whole link from your chat, including the part after #." }));
+}
+
+// Pasting the full link into this tab only changes the #fragment, which doesn't reload the page.
+addEventListener("hashchange", () => location.reload());
+boot();
 </script>
 </body>
 </html>
