@@ -22,6 +22,7 @@
   }
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 body {
   margin: 0; min-height: 100vh; background: var(--bg); color: var(--ink);
   font: 15px/1.5 var(--sans); -webkit-font-smoothing: antialiased;
@@ -31,8 +32,15 @@ main {
   width: 100%; max-width: 520px; background: var(--panel); border: 1px solid var(--line);
   border-radius: 14px; padding: 28px 28px 24px;
 }
-.brand { font-size: 13px; color: var(--muted); margin: 0 0 18px; display: flex; align-items: center; gap: 7px; }
+.top { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 18px; flex-wrap: wrap; }
+.brand { font-size: 13px; color: var(--muted); margin: 0; display: flex; align-items: center; gap: 7px; }
 .brand svg { color: var(--accent); }
+.phrase {
+  font: 600 12.5px/1 var(--mono); color: var(--accent); border: 1px solid var(--accent); border-radius: 999px;
+  padding: 5px 10px; white-space: nowrap;
+}
+.phrase-intro { font-size: 13px; background: var(--dest); border-radius: 8px; padding: 10px 12px; margin: 0 0 18px; }
+.phrase-intro strong { font-family: var(--mono); }
 h1 { text-wrap: balance; font-size: 22px; line-height: 1.25; font-weight: 650; letter-spacing: -0.01em; margin: 0 0 8px; }
 .reason { color: var(--muted); margin: 0 0 20px; white-space: pre-wrap; }
 .places { border: 0; margin: 4px 0 0; padding: 0; min-width: 0; }
@@ -83,7 +91,18 @@ button:hover:not(:disabled) { border-color: var(--muted); }
 button.primary:hover:not(:disabled) { filter: brightness(1.08); }
 @media (prefers-reduced-motion: reduce) { button { transition: none; } }
 button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-button.reveal { font-weight: 500; font-size: 13px; padding: 0 12px; min-width: 64px; color: var(--muted); }
+button.reveal, button.upload { font-weight: 500; font-size: 13px; padding: 0 12px; min-width: 64px; color: var(--muted); }
+.attached {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap; border: 1px dashed var(--line);
+  border-radius: 8px; padding: 8px 8px 8px 12px; font-size: 14px;
+}
+.attached .what { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.attached button { padding: 7px 12px; font-size: 13px; font-weight: 500; }
+.preview {
+  margin: 8px 0 0; padding: 10px 12px; max-height: 220px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
+  font: 12.5px/1.45 var(--mono); background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+}
+.field.dropping .input-row input, .field.dropping .attached { border-color: var(--accent); border-style: solid; }
 button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 button:disabled { opacity: 0.6; cursor: default; }
 .msg { font-size: 13px; margin: 6px 0 0; }
@@ -131,6 +150,13 @@ function render() {
   const inputs = [];
   const brand = el("p", { class: "brand", html: ICON_KEY });
   brand.append("agentikeys");
+  // The security phrase: agents never see it, so a lookalike page can't show it.
+  const phrase = el("span", {
+    class: "phrase", translate: "no", text: DATA.phrase,
+    title: "Your security phrase. Every real agentikeys page shows it.",
+    "aria-label": `Your security phrase: ${DATA.phrase}`,
+  });
+  const top = el("div", { class: "top" }, brand, phrase);
   const places = placesEl();
   const banner = el("p", { class: "banner", role: "alert", hidden: "" });
   const form = el("form", { novalidate: "" });
@@ -151,13 +177,76 @@ function render() {
       reveal.setAttribute("aria-label", `${reveal.textContent} ${what}`);
     });
     const head = el("div", { class: "field-head" }, el("label", { for: id, text: what }));
-    if (f.label && f.label !== f.tag) head.append(el("span", { class: "name", translate: "no", text: f.tag }));
+    if (f.label && f.label !== f.name) head.append(el("span", { class: "name", translate: "no", text: f.name }));
     if (f.optional) head.append(el("span", { class: "opt", text: "Optional" }));
     if (f.help_url) head.append(el("a", { href: f.help_url, target: "_blank", rel: "noopener noreferrer", text: "Where do I find this?" }));
     const msg = el("p", { class: "msg", id: `${id}-msg`, "aria-live": "polite" });
-    input.addEventListener("input", () => { input.removeAttribute("aria-invalid"); msg.textContent = ""; msg.className = "msg"; warned.delete(i); });
-    form.append(el("div", { class: "field" }, head, el("div", { class: "input-row" }, input, reveal), msg));
-    inputs.push({ f, input, msg });
+    const clearMsg = () => { input.removeAttribute("aria-invalid"); msg.textContent = ""; msg.className = "msg"; warned.delete(i); };
+    input.addEventListener("input", clearMsg);
+
+    // Multi-line values (PEM keys, JSON key files) can't live in a password input, so they're held
+    // here exactly as pasted or uploaded, never trimmed.
+    const st = { f, input, msg, attached: null };
+    const picker = el("input", { type: "file", hidden: "", tabindex: "-1" });
+    const upload = el("button", { type: "button", class: "upload", text: "Upload", "aria-label": `Upload a file for ${what}` });
+    upload.addEventListener("click", () => picker.click());
+    const row = el("div", { class: "input-row" }, input, reveal, upload);
+    const chip = el("div", { class: "attached", hidden: "" });
+    const preview = el("pre", { class: "preview", hidden: "", translate: "no" });
+    const attach = (text, label) => {
+      clearMsg();
+      st.attached = text;
+      input.value = "";
+      const show = el("button", { type: "button", text: "Show" });
+      show.addEventListener("click", () => {
+        preview.hidden = !preview.hidden;
+        preview.textContent = preview.hidden ? "" : st.attached;
+        show.textContent = preview.hidden ? "Show" : "Hide";
+      });
+      const remove = el("button", { type: "button", text: "Remove", "aria-label": `Remove the value for ${what}` });
+      remove.addEventListener("click", () => {
+        st.attached = null;
+        preview.hidden = true;
+        preview.textContent = "";
+        chip.hidden = true;
+        row.hidden = false;
+        input.focus();
+      });
+      chip.replaceChildren(el("span", { class: "what", text: label }), show, remove);
+      row.hidden = true;
+      chip.hidden = false;
+      show.focus();
+    };
+    const size = (n) => (n < 1024 ? `${n} bytes` : `${(n / 1024).toFixed(1)} KB`);
+    const readFile = async (file) => {
+      if (!file) return;
+      if (file.size > 256 * 1024) {
+        msg.className = "msg error";
+        msg.textContent = "That file is over 256 KB, which is too big for a key.";
+        return;
+      }
+      try {
+        const text = new TextDecoder("utf-8", { fatal: true }).decode(await file.arrayBuffer());
+        attach(text, `${file.name} · ${size(file.size)}`);
+      } catch {
+        msg.className = "msg error";
+        msg.textContent = "That file isn't text. Keys in binary formats aren't supported yet.";
+      }
+    };
+    picker.addEventListener("change", () => { readFile(picker.files[0]); picker.value = ""; });
+    input.addEventListener("paste", (e) => {
+      const text = e.clipboardData.getData("text");
+      if (!/\r|\n/.test(text.replace(/\s+$/, ""))) return;
+      e.preventDefault();
+      const lines = text.replace(/\s+$/, "").split(/\r?\n/).length;
+      attach(text, `Pasted ${lines} lines · ${size(new TextEncoder().encode(text).length)}`);
+    });
+    const field = el("div", { class: "field" }, head, row, chip, preview, msg, picker);
+    field.addEventListener("dragover", (e) => { e.preventDefault(); field.classList.add("dropping"); });
+    field.addEventListener("dragleave", () => field.classList.remove("dropping"));
+    field.addEventListener("drop", (e) => { e.preventDefault(); field.classList.remove("dropping"); readFile(e.dataTransfer.files[0]); });
+    form.append(field);
+    inputs.push(st);
   });
 
   const n = DATA.fields.length;
@@ -175,8 +264,8 @@ function render() {
     banner.hidden = true;
     const values = {};
     let blocked = false;
-    inputs.forEach(({ f, input, msg }, i) => {
-      const v = input.value.trim();
+    inputs.forEach(({ f, input, msg, attached }, i) => {
+      const v = attached !== null && attached.trim() ? attached : input.value.trim();
       if (!v) {
         if (!f.optional) {
           input.setAttribute("aria-invalid", "true");
@@ -187,7 +276,7 @@ function render() {
         return;
       }
       const re = patternFor(f);
-      if (re && !re.test(v) && !warned.has(i)) {
+      if (attached === null && re && !re.test(v) && !warned.has(i)) {
         msg.className = "msg warn";
         msg.textContent = "This doesn't match the format your agent expected. Check it, or save again to keep it.";
         warned.add(i);
@@ -226,6 +315,7 @@ function render() {
     const res = await post("submit", body);
     places.markDone(res.body.done || []);
     if (res.ok) {
+      inputs.forEach((st) => { st.input.value = ""; st.attached = null; });
       const saved = res.body.saved.length;
       finish("Saved", `${saved === 1 ? "1 key" : saved + " keys"} saved to ${places.doneNames()}. You can close this tab and go back to your chat.`);
     } else {
@@ -242,7 +332,13 @@ function render() {
     finish("Cancelled", "Nothing was saved. You can close this tab and go back to your chat.");
   });
 
-  app.append(brand, el("h1", { text: DATA.title }));
+  app.append(top);
+  if (DATA.phrase_new) {
+    const intro = el("p", { class: "phrase-intro" }, "Your security phrase is ", el("strong", { translate: "no", text: DATA.phrase }),
+      ". Every real agentikeys page shows it in this corner. If a page ever asks for your keys without it, close it.");
+    app.append(intro);
+  }
+  app.append(el("h1", { text: DATA.title }));
   if (DATA.reason) app.append(el("p", { class: "reason", text: DATA.reason }));
   app.append(banner, form);
   inputs[0].input.focus();

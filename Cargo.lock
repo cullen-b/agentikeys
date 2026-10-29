@@ -52,6 +52,7 @@ dependencies = [
  "sha2",
  "tiny_http",
  "toml_edit",
+ "zeroize",
 ]
 
 [[package]]

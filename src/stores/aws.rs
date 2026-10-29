@@ -100,7 +100,8 @@ impl Aws {
     /// from fetching a value that looks like a URL. Unix-only, as `/dev/stdin` doesn't exist on Windows.
     fn call_json(&self, service: &str, op: &str, request: &Value, secret: Option<&str>) -> Result<Value> {
         let cmd = self.command(&[service, op, "--cli-input-json", "file:///dev/stdin"]);
-        let out = run(cmd, Some(&request.to_string()), secret)?;
+        let input = zeroize::Zeroizing::new(request.to_string());
+        let out = run(cmd, Some(&input), secret)?;
         serde_json::from_str(&out).with_context(|| format!("reading the response of `aws {service} {op}`"))
     }
 

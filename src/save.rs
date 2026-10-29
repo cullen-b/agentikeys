@@ -10,6 +10,32 @@ use std::collections::BTreeMap;
 
 pub const FILE: &str = "file";
 
+/// Field name -> value, overwritten with zeros when dropped. Best effort: copies made inside serde,
+/// the CLIs and the OS (pipe buffers) are out of reach.
+#[derive(Default, Deserialize)]
+#[serde(transparent)]
+pub struct Secrets(BTreeMap<String, String>);
+
+impl std::ops::Deref for Secrets {
+    type Target = BTreeMap<String, String>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Secrets {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Drop for Secrets {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.0.values_mut().for_each(Zeroize::zeroize);
+    }
+}
+
 /// Everything the user can pick from, worked out before the page opens.
 pub struct Places {
     pub file: Option<FilePlan>,

@@ -1,3 +1,5 @@
+mod log;
+mod phrase;
 mod save;
 mod seal;
 mod spec;
@@ -58,6 +60,24 @@ enum Cmd {
     Config {
         #[command(subcommand)]
         set: Option<ConfigSet>,
+    },
+    /// Show recent requests: which keys, saved where, for which project. Never values.
+    Log {
+        /// How many of the most recent requests to show.
+        #[arg(short, default_value_t = 20)]
+        n: usize,
+        /// Only requests that asked for this key (field name).
+        #[arg(long)]
+        key: Option<String>,
+        /// One JSON object per line.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show your security phrase (only in an interactive terminal, never to an agent).
+    Phrase {
+        /// Replace it with a new one.
+        #[arg(long)]
+        reset: bool,
     },
 }
 
@@ -126,18 +146,45 @@ fn main() -> ExitCode {
             r
         }
         Cmd::Wait { id, timeout } => wait(&id, timeout).unwrap_or_else(Receipt::error),
-        Cmd::Config { set } => {
-            return match config(set) {
-                Ok(()) => ExitCode::SUCCESS,
-                Err(e) => {
-                    eprintln!("agentikeys: {e:#}");
-                    ExitCode::FAILURE
-                }
-            };
-        }
+        Cmd::Config { set } => return plain(config(set)),
+        Cmd::Phrase { reset } => return plain(show_phrase(reset)),
+        Cmd::Log { n, key, json } => return plain(show_log(n, key.as_deref(), json)),
     };
     println!("{}", serde_json::to_string(&receipt).expect("receipt serializes"));
     receipt.exit_code()
+}
+
+/// Exit status for commands a person runs, which print text rather than a receipt.
+fn plain(result: Result<()>) -> ExitCode {
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("agentikeys: {e:#}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn show_log(n: usize, key: Option<&str>, json: bool) -> Result<()> {
+    let entries = log::read(n, key)?;
+    if entries.is_empty() && !json {
+        println!("No requests logged yet.");
+    }
+    for e in &entries {
+        println!("{}", if json { serde_json::to_string(e)? } else { log::describe(e) });
+    }
+    Ok(())
+}
+
+fn show_phrase(reset: bool) -> Result<()> {
+    use std::io::IsTerminal;
+    if !std::io::stdout().is_terminal() {
+        bail!("the security phrase is only shown in an interactive terminal, so it never reaches an agent; run `agentikeys phrase` yourself");
+    }
+    let phrase = if reset { phrase::reset()? } else { phrase::get_or_create()?.0 };
+    println!("Your agentikeys security phrase: {phrase}");
+    println!("Every real agentikeys page shows it. Never enter keys on a page that doesn't.");
+    Ok(())
 }
 
 fn request(
@@ -174,7 +221,9 @@ fn request(
     let (server, exposure) = transport::start(via)?;
     let offers = detecting.join().unwrap_or_default();
     let places = save::Places::new(&spec, file, offers)?;
-    let outcome = web::serve(&spec, &places, server, &exposure, Duration::from_secs(timeout), |url| {
+    let (phrase, phrase_new) = phrase::get_or_create()?;
+    let page = web::Page { spec: &spec, places: &places, phrase: &phrase, phrase_new };
+    let outcome = web::serve(&page, server, &exposure, Duration::from_secs(timeout), |url| {
         let opened = via == Via::Local && !no_open && open_browser(url);
         eprintln!(
             "agentikeys: {} {url}",
@@ -191,11 +240,25 @@ fn request(
     }
     drop(exposure);
 
-    Ok(match outcome {
+    let done = match outcome {
         web::Outcome::Saved(keys, saved_to) => Receipt { keys, saved_to, ..Receipt::status("saved") },
         web::Outcome::Cancelled(saved_to) => Receipt { saved_to, ..Receipt::status("cancelled") },
         web::Outcome::TimedOut(saved_to) => Receipt { saved_to, ..Receipt::status("timed_out") },
-    })
+    };
+    let entry = log::Entry {
+        time: log::now(),
+        id: receipt.and_then(|p| p.file_stem()).map(|s| s.to_string_lossy().into_owned()),
+        title: spec.title.clone(),
+        cwd: cwd.display().to_string(),
+        keys: spec.fields.iter().map(|f| f.name.clone()).collect(),
+        via: name(via).into(),
+        status: done.status.clone(),
+        saved_to: done.saved_to.clone(),
+    };
+    if let Err(e) = log::append(&entry) {
+        eprintln!("agentikeys: couldn't write the log: {e:#}");
+    }
+    Ok(done)
 }
 
 fn spawn_detached(spec_text: &str, via: Via, timeout: u64, no_open: bool, cwd: &Path) -> Result<Receipt> {
@@ -246,12 +309,17 @@ fn wait(id: &str, timeout: u64) -> Result<Receipt> {
     }
 }
 
-fn config_path() -> Result<PathBuf> {
+/// agentikeys' own folder: settings, the security phrase and the log.
+pub fn config_dir() -> Result<PathBuf> {
     let base = match std::env::var_os("XDG_CONFIG_HOME").or_else(|| std::env::var_os("APPDATA")) {
         Some(dir) => PathBuf::from(dir),
         None => PathBuf::from(std::env::var_os("HOME").context("HOME isn't set")?).join(".config"),
     };
-    Ok(base.join("agentikeys").join("config.toml"))
+    Ok(base.join("agentikeys"))
+}
+
+fn config_path() -> Result<PathBuf> {
+    Ok(config_dir()?.join("config.toml"))
 }
 
 fn configured_via() -> Result<Via> {

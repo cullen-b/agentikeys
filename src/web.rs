@@ -2,18 +2,19 @@
 
 use crate::seal::{Opener, Sealed, ViewKey};
 use crate::spec::Spec;
-use crate::save::{Pick, Places, SavedTo};
+use crate::save::{Pick, Places, SavedTo, Secrets};
+use zeroize::Zeroize;
 use crate::transport::{Exposure, TUNNEL_NOTE, Via};
 use anyhow::{Result, anyhow};
 use serde::Deserialize;
 use serde_json::json;
-use std::collections::BTreeMap;
 use std::io::Read;
 use std::time::{Duration, Instant};
 use tiny_http::{Header, Method, Request, Response, Server};
 
 const FORM: &str = include_str!("form.html");
-const MAX_BODY: u64 = 64 * 1024;
+// Room for uploaded key files (the page caps each at 256 KB) after encryption and base64.
+const MAX_BODY: u64 = 2 * 1024 * 1024;
 
 /// How the request ended, with every place values were saved to (a cancel can follow a partial save).
 pub enum Outcome {
@@ -25,7 +26,7 @@ pub enum Outcome {
 
 #[derive(Deserialize)]
 struct Submission {
-    values: BTreeMap<String, String>,
+    values: Secrets,
     places: Vec<Pick>,
 }
 
@@ -37,9 +38,17 @@ enum Body {
     Plain(Submission),
 }
 
+/// What the page shows.
+pub struct Page<'a> {
+    pub spec: &'a Spec,
+    pub places: &'a Places,
+    pub phrase: &'a str,
+    /// The phrase was just created, so the page introduces it.
+    pub phrase_new: bool,
+}
+
 pub fn serve(
-    spec: &Spec,
-    places: &Places,
+    page: &Page,
     server: Server,
     exposure: &Exposure,
     timeout: Duration,
@@ -49,7 +58,8 @@ pub fn serve(
     let nonce = random_hex(16)?;
     let opener = if exposure.encrypt { Some(Opener::new()?) } else { None };
     let view = if exposure.encrypt { Some(ViewKey::new()?) } else { None };
-    let page = render(spec, places, exposure, &nonce, view.as_ref(), token.as_bytes())?;
+    let (spec, places) = (page.spec, page.places);
+    let html = render(page, exposure, &nonce, view.as_ref(), token.as_bytes())?;
     let reply = |req: Request, status: u16, body: serde_json::Value| match &view {
         Some(v) => match v.seal(body.to_string().as_bytes(), token.as_bytes()) {
             Ok(sealed) => respond_json(req, status, json!({"sealed": sealed})),
@@ -81,7 +91,7 @@ pub fn serve(
         }
         let url = req.url().to_string();
         match (req.method(), url.as_str()) {
-            (Method::Get, u) if u == base => respond(req, 200, "text/html; charset=utf-8", page.clone(), Some(&nonce)),
+            (Method::Get, u) if u == base => respond(req, 200, "text/html; charset=utf-8", html.clone(), Some(&nonce)),
             (Method::Post, u) if u == format!("{base}/submit") || u == format!("{base}/cancel") => {
                 if !header(&req, "Origin").is_some_and(|o| exposure.origins.contains(&o))
                     || !header(&req, "Content-Type").is_some_and(|c| c.starts_with("application/json"))
@@ -118,7 +128,7 @@ pub fn serve(
                 let done = json!(done);
                 saved.extend(outcome.saved);
                 if outcome.failed.is_empty() {
-                    let names: Vec<String> = values.into_keys().collect();
+                    let names: Vec<String> = values.keys().cloned().collect();
                     reply(req, 200, json!({"saved": names, "done": done}));
                     return Ok(Outcome::Saved(names, saved));
                 }
@@ -133,24 +143,30 @@ pub fn serve(
 
 fn unseal(body: Body, opener: Option<&Opener>, aad: &[u8]) -> Result<Submission> {
     match (body, opener) {
-        (Body::Sealed { sealed }, Some(o)) => Ok(serde_json::from_slice(&o.open(&sealed, aad)?)?),
+        (Body::Sealed { sealed }, Some(o)) => {
+            let mut plain = o.open(&sealed, aad)?;
+            let parsed = serde_json::from_slice(&plain);
+            plain.zeroize();
+            Ok(parsed?)
+        }
         (Body::Plain(s), None) => Ok(s),
         (Body::Plain(_), Some(_)) => Err(anyhow!("values must be encrypted on this link; reload the page and try again")),
         (Body::Sealed { .. }, None) => Err(anyhow!("unexpected encrypted submission")),
     }
 }
 
-/// Checks the submission against the spec; returns field name -> trimmed value (skipping empty optionals), and the picks.
-fn collect(spec: &Spec, s: Submission) -> Result<(BTreeMap<String, String>, Vec<Pick>)> {
-    let mut out = BTreeMap::new();
+/// Checks the submission against the spec; returns field name -> value (skipping empty optionals), and the picks.
+/// Values are kept exactly as sent: the page trims typed values but not pasted or uploaded files.
+fn collect(spec: &Spec, s: Submission) -> Result<(Secrets, Vec<Pick>)> {
+    let mut out = Secrets::default();
     for name in s.values.keys() {
         if !spec.fields.iter().any(|f| &f.name == name) {
             return Err(anyhow!("unexpected field {name}"));
         }
     }
     for f in &spec.fields {
-        let v = s.values.get(&f.name).map(|v| v.trim()).unwrap_or("");
-        if v.is_empty() {
+        let v = s.values.get(&f.name).map(String::as_str).unwrap_or("");
+        if v.trim().is_empty() {
             if !f.optional {
                 return Err(anyhow!("{} is required", f.label.as_deref().unwrap_or(&f.name)));
             }
@@ -162,9 +178,12 @@ fn collect(spec: &Spec, s: Submission) -> Result<(BTreeMap<String, String>, Vec<
 }
 
 /// The page. With a view key, its data is sealed so the network only ever sees the generic page code.
-fn render(spec: &Spec, places: &Places, exposure: &Exposure, nonce: &str, view: Option<&ViewKey>, aad: &[u8]) -> Result<String> {
+fn render(page: &Page, exposure: &Exposure, nonce: &str, view: Option<&ViewKey>, aad: &[u8]) -> Result<String> {
+    let (spec, places) = (page.spec, page.places);
     let data = json!({
         "title": spec.title,
+        "phrase": page.phrase,
+        "phrase_new": page.phrase_new,
         "reason": spec.reason,
         "places": places.for_page(spec, tilde),
         "encrypt": exposure.encrypt,
@@ -198,8 +217,10 @@ fn tilde(path: &str) -> String {
 
 fn read_json<T: serde::de::DeserializeOwned>(req: &mut Request) -> Result<T> {
     let mut body = String::new();
-    req.as_reader().take(MAX_BODY).read_to_string(&mut body)?;
-    Ok(serde_json::from_str(&body)?)
+    let read = req.as_reader().take(MAX_BODY).read_to_string(&mut body);
+    let parsed = read.map_err(anyhow::Error::from).and_then(|_| Ok(serde_json::from_str(&body)?));
+    body.zeroize();
+    parsed
 }
 
 fn header(req: &Request, name: &'static str) -> Option<String> {

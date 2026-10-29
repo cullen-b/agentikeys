@@ -27,6 +27,12 @@ pub struct FilePlan {
     existing: String,
 }
 
+impl Drop for FilePlan {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.existing);
+    }
+}
+
 pub fn plan_file(spec: &Spec, cwd: &Path) -> Result<Option<FilePlan>> {
     match (&spec.destination.path, spec.file_format()?) {
         (Some(path), Some(format)) => Ok(Some(plan_path(path, format, cwd)?)),
@@ -65,7 +71,7 @@ fn write_file(plan: &FilePlan, pairs: &[(&str, &str)]) -> Result<()> {
         let root = plan.repo_root.as_ref().expect("WillIgnore implies a repo");
         add_to_gitignore(root, &plan.path)?;
     }
-    let out = apply(plan.format, &plan.existing, pairs)?;
+    let out = zeroize::Zeroizing::new(apply(plan.format, &plan.existing, pairs)?);
     if let Some(dir) = plan.path.parent() {
         fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
