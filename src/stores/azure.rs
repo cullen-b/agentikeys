@@ -1,6 +1,6 @@
 //! Azure Key Vault secrets via the `az` CLI. Every `put` adds a new version, so there's no create/update split.
 
-use super::SecretStore;
+use super::{Offer, SecretStore, not_installed};
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -17,6 +17,39 @@ pub struct Options {
     /// Subscription name or ID; defaults to the one `az` has selected.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subscription: Option<String>,
+}
+
+const KIND: &str = "azure_key_vault";
+const SERVICE: &str = "Azure Key Vault";
+
+/// Offers Key Vault when az is signed in, with the subscription's vaults to pick from.
+pub fn detect() -> Vec<Offer> {
+    detect_with(&KeyVault { bin: "az".into(), opts: Options { vault: String::new(), subscription: None } })
+}
+
+fn detect_with(kv: &KeyVault) -> Vec<Offer> {
+    let user = match super::run(kv.az(&["account", "show", "--query", "user.name", "-o", "tsv", "--only-show-errors"]), None, None) {
+        Err(e) if not_installed(&e) => return Vec::new(),
+        Err(_) => return vec![Offer::unavailable(KIND, SERVICE, "Not signed in: run `az login`")],
+        Ok(out) => out.trim().to_string(),
+    };
+    let list = ["keyvault", "list", "--query", "[].name", "-o", "tsv", "--only-show-errors"];
+    let vaults: Vec<String> = super::run(kv.az(&list), None, None)
+        .unwrap_or_default()
+        .lines()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(String::from)
+        .collect();
+    vec![Offer {
+        kind: KIND,
+        service: SERVICE.into(),
+        detail: format!("Signed in as {user}"),
+        problem: None,
+        choice_label: Some("Vault"),
+        default_choice: vaults.first().cloned(),
+        choices: vaults,
+    }]
 }
 
 pub fn backend(opts: &Options) -> Box<dyn SecretStore> {
@@ -57,6 +90,12 @@ impl SecretStore for KeyVault {
             bail!("the Azure CLI isn't signed in (or the subscription isn't usable): run `az login`, then retry. {e:#}");
         }
         Ok(())
+    }
+
+    // Key Vault only allows letters, digits and hyphens, so STRIPE_KEY is stored as stripe-key.
+    fn name_for(&self, wanted: &str) -> String {
+        let valid = (1..=127).contains(&wanted.len()) && wanted.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+        if valid { wanted.to_string() } else { suggest(wanted) }
     }
 
     fn put(&self, name: &str, value: &str) -> Result<String> {

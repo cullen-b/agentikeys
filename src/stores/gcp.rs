@@ -1,6 +1,6 @@
 //! Google Cloud Secret Manager via `gcloud`, reusing the user's existing `gcloud auth login`.
 
-use super::{SecretStore, run};
+use super::{Offer, SecretStore, run};
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 use std::process::Command;
@@ -74,10 +74,49 @@ impl Gcp {
     }
 }
 
-fn not_installed(err: &anyhow::Error) -> bool {
-    err.chain().any(|c| {
-        c.downcast_ref::<std::io::Error>().is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound)
-    })
+use super::not_installed;
+
+const KIND: &str = "gcp_secret_manager";
+const SERVICE: &str = "Google Cloud Secret Manager";
+
+/// Offers Secret Manager when gcloud is signed in, with the account's projects to pick from.
+pub fn detect() -> Vec<Offer> {
+    detect_with(&Gcp::new("gcloud", None))
+}
+
+fn detect_with(g: &Gcp) -> Vec<Offer> {
+    let list = ["auth", "list", "--filter=status:ACTIVE", "--format=value(account)"];
+    let account = match run(g.gcloud(&list), None, None) {
+        Err(e) if not_installed(&e) => return Vec::new(),
+        Err(e) => return vec![Offer::unavailable(KIND, SERVICE, format!("gcloud failed: {e:#}"))],
+        Ok(out) => out.lines().next().unwrap_or("").trim().to_string(),
+    };
+    if account.is_empty() {
+        return vec![Offer::unavailable(KIND, SERVICE, "Not signed in: run `gcloud auth login`")];
+    }
+    let projects = ["projects", "list", "--format=value(projectId)", "--sort-by=projectId", "--limit=500"];
+    let mut choices: Vec<String> = run(g.gcloud(&projects), None, None)
+        .unwrap_or_default()
+        .lines()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(String::from)
+        .collect();
+    let default = g.project().ok().map(String::from);
+    if let Some(d) = &default
+        && !choices.contains(d)
+    {
+        choices.insert(0, d.clone());
+    }
+    vec![Offer {
+        kind: KIND,
+        service: SERVICE.into(),
+        detail: format!("Signed in as {account}"),
+        problem: None,
+        choice_label: Some("Project"),
+        choices,
+        default_choice: default,
+    }]
 }
 
 fn validate_name(name: &str) -> Result<()> {
@@ -291,6 +330,22 @@ esac"#
             assert!(err.contains("Secret Manager secret ID") && err.contains("1-255"), "{err}");
         }
         assert!(g.preflight(&[&"x".repeat(255)]).is_ok());
+    }
+
+    #[test]
+    fn detect_offers_projects_with_default_first() {
+        let dir = temp_dir("gcp-detect");
+        let body = r#"case "$1 $2" in
+"auth list") echo me@example.com;;
+"projects list") printf 'alpha\nbeta\n';;
+"config get-value") echo zeta;;
+esac"#;
+        let offers = detect_with(&gcp(&dir, body, None));
+        assert_eq!(offers.len(), 1);
+        assert_eq!(offers[0].choices, ["zeta", "alpha", "beta"]);
+        assert_eq!(offers[0].default_choice.as_deref(), Some("zeta"));
+        assert!(offers[0].problem.is_none() && offers[0].detail.contains("me@example.com"));
+        assert!(detect_with(&Gcp::new(dir.join("nope").to_str().unwrap(), None)).is_empty());
     }
 
     #[test]

@@ -35,16 +35,33 @@ main {
 .brand svg { color: var(--accent); }
 h1 { text-wrap: balance; font-size: 22px; line-height: 1.25; font-weight: 650; letter-spacing: -0.01em; margin: 0 0 8px; }
 .reason { color: var(--muted); margin: 0 0 20px; white-space: pre-wrap; }
-.dest {
-  display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; align-items: start;
-  background: var(--dest); border-left: 3px solid var(--accent); border-radius: 4px 10px 10px 4px;
-  padding: 12px 14px; margin: 0 0 24px;
+.places { border: 0; margin: 4px 0 0; padding: 0; min-width: 0; }
+.places legend { font-weight: 600; padding: 0; margin: 0 0 8px; }
+.place {
+  display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; align-items: start; cursor: pointer;
+  border: 1px solid var(--line); border-left-width: 3px; border-radius: 4px 10px 10px 4px;
+  padding: 11px 14px; margin: 0 0 8px; transition: background-color 120ms, border-color 120ms;
 }
-.dest svg { grid-row: span 3; color: var(--accent); margin-top: 2px; }
-.dest .lead { font-size: 13px; color: var(--muted); }
-.dest .path { font-family: var(--mono); font-size: 13.5px; word-break: break-all; }
-.dest .note { font-size: 13px; color: var(--muted); }
+.place:has(input:checked) { background: var(--dest); border-color: var(--accent); }
+.place:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+.place.off { cursor: default; }
+.place.off .svc, .place.off .where { color: var(--muted); }
+.place input[type="checkbox"] { grid-row: span 4; margin: 3px 0 0; width: 16px; height: 16px; accent-color: var(--accent); }
+.place .svc { font-weight: 600; }
+.place .where { font-family: var(--mono); font-size: 13px; word-break: break-all; }
+.place .detail, .place .names { font-size: 13px; color: var(--muted); }
+.place .problem { font-size: 13px; color: var(--warn); }
+.place .done { font-size: 13px; color: var(--accent); font-weight: 600; }
+.place .pick { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 13px; color: var(--muted); }
+.place code, footer code { font-family: var(--mono); font-size: 12px; }
+.place select {
+  max-width: 100%; font: 14px/1.3 var(--sans); color: var(--ink);
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px;
+}
+.place select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+@media (prefers-reduced-motion: reduce) { .place { transition: none; } }
 .field { margin: 0 0 18px; }
+h1 + .reason { margin-bottom: 22px; }
 .field-head { display: flex; align-items: baseline; gap: 8px; margin: 0 0 6px; }
 .field-head label { font-weight: 600; }
 .field-head .name { font-family: var(--mono); font-size: 12px; color: var(--muted); }
@@ -77,7 +94,6 @@ footer { border-top: 1px solid var(--line); margin-top: 24px; padding-top: 18px;
 footer p { font-size: 13px; color: var(--muted); margin: 0 0 16px; }
 footer p.note { margin-bottom: 10px; }
 footer a { color: var(--accent); text-underline-offset: 2px; }
-footer code { font-family: var(--mono); font-size: 12px; }
 .actions { display: flex; justify-content: flex-end; gap: 10px; }
 .done h1 { margin-bottom: 6px; }
 .done p { color: var(--muted); margin: 0; }
@@ -92,7 +108,6 @@ footer code { font-family: var(--mono); font-size: 12px; }
 const DATA = JSON.parse(document.getElementById("data").textContent);
 const app = document.getElementById("app");
 const ICON_KEY = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="15" r="4"/><path d="M10.8 12.2 20 3m-4 4 3 3m-6-1 2 2"/></svg>';
-const ICON_FILE = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8z"/><path d="M14 3v5h5"/></svg>';
 
 function el(tag, attrs = {}, ...children) {
   const node = document.createElement(tag);
@@ -114,10 +129,7 @@ function render() {
   const inputs = [];
   const brand = el("p", { class: "brand", html: ICON_KEY });
   brand.append("agentikeys");
-  const dest = el("div", { class: "dest", html: ICON_FILE },
-    el("span", { class: "lead", text: DATA.dest.lead }),
-    el("span", { class: "path", translate: "no", text: DATA.dest.location }),
-    el("span", { class: "note", text: DATA.dest.note || "" }));
+  const places = placesEl();
   const banner = el("p", { class: "banner", role: "alert", hidden: "" });
   const form = el("form", { novalidate: "" });
 
@@ -149,6 +161,7 @@ function render() {
   const n = DATA.fields.length;
   const save = el("button", { type: "submit", class: "primary", text: n === 1 ? "Save key" : `Save ${n} keys` });
   const cancel = el("button", { type: "button", text: "Cancel" });
+  form.append(places.el);
   form.append(el("footer", {},
     DATA.note ? noteEl() : null,
     el("p", { text: "Your agent learns which keys were saved, never what you typed." }),
@@ -185,12 +198,19 @@ function render() {
       if (first) first.input.focus();
       return;
     }
+    const picks = places.picks();
+    if (!picks.length) {
+      banner.textContent = places.anyDone() ? "Everything you picked is saved. Pick another place, or close this tab." : "Pick at least one place to save to.";
+      banner.hidden = false;
+      return;
+    }
     save.disabled = cancel.disabled = true;
     const label = save.textContent;
     save.textContent = "Saving…";
     let body;
     try {
-      body = DATA.encrypt ? { sealed: await seal(values) } : { values };
+      const submission = { values, places: picks };
+      body = DATA.encrypt ? { sealed: await seal(submission) } : submission;
     } catch {
       body = null;
     }
@@ -202,9 +222,10 @@ function render() {
       return;
     }
     const res = await post("submit", body);
+    places.markDone(res.body.done || []);
     if (res.ok) {
       const saved = res.body.saved.length;
-      finish("Saved", `${saved === 1 ? "1 key" : saved + " keys"} saved to ${DATA.dest.location}. You can close this tab and go back to your chat.`);
+      finish("Saved", `${saved === 1 ? "1 key" : saved + " keys"} saved to ${places.doneNames()}. You can close this tab and go back to your chat.`);
     } else {
       banner.textContent = res.body.error || "The connection dropped before agentikeys confirmed the save. Your agent can check whether it went through.";
       banner.hidden = false;
@@ -221,7 +242,7 @@ function render() {
 
   app.append(brand, el("h1", { text: DATA.title }));
   if (DATA.reason) app.append(el("p", { class: "reason", text: DATA.reason }));
-  app.append(dest, banner, form);
+  app.append(banner, form);
   if (DATA.encrypt && (!hostKey() || !window.crypto || !crypto.subtle)) {
     banner.textContent = hostKey()
       ? "This browser can't encrypt the values. Try a current version of Chrome, Safari, Firefox or Edge."
@@ -232,17 +253,67 @@ function render() {
   inputs[0].input.focus();
 }
 
+// Appends `text` to `node`, rendering `backticked` parts as code.
+function withCode(node, text, linkify = (part) => [part]) {
+  for (const part of text.split(/(`[^`]+`)/)) {
+    if (part.startsWith("`")) node.append(el("code", { text: part.slice(1, -1) }));
+    else node.append(...linkify(part));
+  }
+  return node;
+}
+
 // Tunnel note: `code` spans and the Tailscale link rendered properly.
 function noteEl() {
-  const p = el("p", { class: "note" });
   const link = "Tailscale (https://tailscale.com/download)";
-  for (const part of DATA.note.split(/(`[^`]+`)/)) {
-    if (part.startsWith("`")) { p.append(el("code", { text: part.slice(1, -1) })); continue; }
+  return withCode(el("p", { class: "note" }), DATA.note, (part) => {
     const [before, after] = part.split(link);
-    p.append(before);
-    if (after !== undefined) p.append(el("a", { href: "https://tailscale.com/download", target: "_blank", rel: "noopener noreferrer", text: "Tailscale" }), after);
-  }
-  return p;
+    if (after === undefined) return [before];
+    return [before, el("a", { href: "https://tailscale.com/download", target: "_blank", rel: "noopener noreferrer", text: "Tailscale" }), after];
+  });
+}
+
+// "Save to": one checkbox row per place the values can go.
+function placesEl() {
+  const rows = [];
+  const fieldset = el("fieldset", { class: "places" }, el("legend", { text: "Save to" }));
+  DATA.places.forEach((p, i) => {
+    const off = !!p.problem;
+    const box = el("input", { type: "checkbox", id: `p${i}`, name: "place", value: p.id });
+    box.checked = !!p.selected && !off;
+    box.disabled = off;
+    const row = el("label", { class: off ? "place off" : "place", for: `p${i}` }, box, el("span", { class: "svc", text: p.service }));
+    if (p.location) row.append(el("span", { class: "where", translate: "no", text: p.location }));
+    if (p.detail) row.append(el("span", { class: "detail", text: p.detail }));
+    let select = null;
+    if (p.choice_label && p.choices.length && !off) {
+      select = el("select", { id: `p${i}-choice`, translate: "no" });
+      for (const c of p.choices) select.append(el("option", { value: c, text: c }));
+      if (p.default_choice) select.value = p.default_choice;
+      select.addEventListener("change", () => { box.checked = true; });
+      row.append(el("span", { class: "pick" }, el("span", { text: p.choice_label }), select));
+      select.setAttribute("aria-label", `${p.choice_label} for ${p.service}`);
+    }
+    if (p.names) row.append(el("span", { class: "names", text: p.names }));
+    if (off) row.append(withCode(el("span", { class: "problem" }), p.problem));
+    const status = el("span", { class: "done", "aria-live": "polite" });
+    row.append(status);
+    fieldset.append(row);
+    rows.push({ p, box, select, status, done: false });
+  });
+  const label = (r) => r.select ? `${r.p.service} (${r.select.value})` : r.p.location || r.p.service;
+  return {
+    el: fieldset,
+    picks: () => rows.filter((r) => r.box.checked && !r.done).map((r) => ({ id: r.p.id, choice: r.select ? r.select.value : null })),
+    markDone: (ids) => rows.filter((r) => ids.includes(r.p.id) && r.box.checked && !r.done).forEach((r) => {
+      r.done = true;
+      r.box.checked = false;
+      r.box.disabled = true;
+      if (r.select) r.select.disabled = true;
+      r.status.textContent = "Saved";
+    }),
+    anyDone: () => rows.some((r) => r.done),
+    doneNames: () => rows.filter((r) => r.done).map(label).join(" and "),
+  };
 }
 
 const b64u = {
@@ -256,7 +327,7 @@ function hostKey() {
 }
 
 // ECDH P-256 -> HKDF-SHA256 -> AES-256-GCM, bound to this link's token. Mirrors src/seal.rs.
-async function seal(values) {
+async function seal(submission) {
   const subtle = crypto.subtle;
   const enc = new TextEncoder();
   const curve = { name: "ECDH", namedCurve: "P-256" };
@@ -269,7 +340,7 @@ async function seal(values) {
     hkdf, { name: "AES-GCM", length: 256 }, false, ["encrypt"]);
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const aad = enc.encode(location.pathname.slice(1));
-  const ct = await subtle.encrypt({ name: "AES-GCM", iv, additionalData: aad }, key, enc.encode(JSON.stringify({ values })));
+  const ct = await subtle.encrypt({ name: "AES-GCM", iv, additionalData: aad }, key, enc.encode(JSON.stringify(submission)));
   return { epk: b64u.enc(await subtle.exportKey("raw", eph.publicKey)), iv: b64u.enc(iv), ct: b64u.enc(ct) };
 }
 

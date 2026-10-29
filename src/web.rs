@@ -2,7 +2,7 @@
 
 use crate::seal::{Opener, Sealed};
 use crate::spec::Spec;
-use crate::store::{self, GitStatus, Plan};
+use crate::save::{Pick, Places, SavedTo};
 use crate::transport::{Exposure, TUNNEL_NOTE, Via};
 use anyhow::{Result, anyhow};
 use serde::Deserialize;
@@ -15,16 +15,18 @@ use tiny_http::{Header, Method, Request, Response, Server};
 const FORM: &str = include_str!("form.html");
 const MAX_BODY: u64 = 64 * 1024;
 
+/// How the request ended, with every place values were saved to (a cancel can follow a partial save).
 pub enum Outcome {
-    /// Field names that were saved, and field name -> store reference.
-    Saved(Vec<String>, BTreeMap<String, String>),
-    Cancelled,
-    TimedOut,
+    /// Field names that were saved.
+    Saved(Vec<String>, Vec<SavedTo>),
+    Cancelled(Vec<SavedTo>),
+    TimedOut(Vec<SavedTo>),
 }
 
 #[derive(Deserialize)]
 struct Submission {
     values: BTreeMap<String, String>,
+    places: Vec<Pick>,
 }
 
 /// Request body: plain values, or values sealed to this request's key.
@@ -37,7 +39,7 @@ enum Body {
 
 pub fn serve(
     spec: &Spec,
-    plan: &Plan,
+    places: &Places,
     server: Server,
     exposure: &Exposure,
     timeout: Duration,
@@ -46,7 +48,8 @@ pub fn serve(
     let token = random_hex(32)?;
     let nonce = random_hex(16)?;
     let opener = if exposure.encrypt { Some(Opener::new()?) } else { None };
-    let page = render(spec, plan, exposure, &nonce);
+    let page = render(spec, places, exposure, &nonce);
+    let mut saved: Vec<SavedTo> = Vec::new();
     let base = format!("/{token}");
 
     let mut url = format!("{}{base}", exposure.public_origin);
@@ -59,7 +62,7 @@ pub fn serve(
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
-            return Ok(Outcome::TimedOut);
+            return Ok(Outcome::TimedOut(saved));
         }
         let Some(mut req) = server.recv_timeout(left)? else { continue };
 
@@ -80,29 +83,40 @@ pub fn serve(
                 }
                 if u.ends_with("/cancel") {
                     respond_json(req, 200, json!({"ok": true}));
-                    return Ok(Outcome::Cancelled);
+                    return Ok(Outcome::Cancelled(saved));
                 }
                 let submission = read_json::<Body>(&mut req)
                     .and_then(|body| unseal(body, opener.as_ref(), token.as_bytes()))
                     .and_then(|s| collect(spec, s));
-                let values = match submission {
+                let (values, picks) = match submission {
                     Ok(v) => v,
                     Err(e) => {
                         respond_json(req, 400, json!({"error": e.to_string()}));
                         continue;
                     }
                 };
-                match store::commit(spec, plan, &values) {
-                    Ok(references) => {
-                        let names: Vec<String> = values.into_keys().collect();
-                        respond_json(req, 200, json!({"saved": names}));
-                        return Ok(Outcome::Saved(names, references));
-                    }
+                let outcome = match places.save(spec, &picks, &values) {
+                    Ok(o) => o,
                     Err(e) => {
-                        respond_json(req, 500, json!({"error": format!("{e:#}")}));
-                        return Err(e);
+                        respond_json(req, 400, json!({"error": format!("{e:#}")}));
+                        continue;
                     }
+                };
+                let done: Vec<&str> = picks
+                    .iter()
+                    .filter(|p| outcome.saved.iter().any(|s| s.kind == p.id))
+                    .map(|p| p.id.as_str())
+                    .collect();
+                let done = json!(done);
+                saved.extend(outcome.saved);
+                if outcome.failed.is_empty() {
+                    let names: Vec<String> = values.into_keys().collect();
+                    respond_json(req, 200, json!({"saved": names, "done": done}));
+                    return Ok(Outcome::Saved(names, saved));
                 }
+                // Keep going so the user can retry or untick the place that failed.
+                let error = format!("Couldn't save to {}", outcome.failed.join("; "));
+                respond_json(req, 500, json!({"error": error, "done": done}));
             }
             _ => respond(req, 404, "text/plain", "not found".into(), None),
         }
@@ -118,8 +132,8 @@ fn unseal(body: Body, opener: Option<&Opener>, aad: &[u8]) -> Result<Submission>
     }
 }
 
-/// Checks the submission against the spec; returns field name -> trimmed value, skipping empty optionals.
-fn collect(spec: &Spec, s: Submission) -> Result<BTreeMap<String, String>> {
+/// Checks the submission against the spec; returns field name -> trimmed value (skipping empty optionals), and the picks.
+fn collect(spec: &Spec, s: Submission) -> Result<(BTreeMap<String, String>, Vec<Pick>)> {
     let mut out = BTreeMap::new();
     for name in s.values.keys() {
         if !spec.fields.iter().any(|f| &f.name == name) {
@@ -136,40 +150,18 @@ fn collect(spec: &Spec, s: Submission) -> Result<BTreeMap<String, String>> {
         }
         out.insert(f.name.clone(), v.to_string());
     }
-    Ok(out)
+    Ok((out, s.places))
 }
 
-/// The "Saves to" block: (lead, where, note).
-fn destination(plan: &Plan) -> serde_json::Value {
-    let file = plan.file.as_ref().map(|f| tilde(&f.path.display().to_string()));
-    match (&plan.store, &plan.file) {
-        (Some(store), _) => {
-            let (service, location) = store.describe();
-            let note = file.map(|p| format!("{p} gets references to these secrets, not the values."));
-            json!({"lead": format!("Saves to {service}"), "location": location, "note": note})
-        }
-        (None, Some(f)) => {
-            let note = match f.git {
-                GitStatus::AlreadyIgnored => "Already ignored by git.",
-                GitStatus::WillIgnore => "Will be added to .gitignore so it is never committed.",
-                GitStatus::NotInRepo => "Not inside a git repository.",
-                GitStatus::References => "",
-            };
-            json!({"lead": format!("Saves to this {} file", f.format.as_str()), "location": file, "note": note})
-        }
-        (None, None) => unreachable!("specs need a path or a store"),
-    }
-}
-
-fn render(spec: &Spec, plan: &Plan, exposure: &Exposure, nonce: &str) -> String {
+fn render(spec: &Spec, places: &Places, exposure: &Exposure, nonce: &str) -> String {
     let data = json!({
         "title": spec.title,
         "reason": spec.reason,
-        "dest": destination(plan),
+        "places": places.for_page(spec, tilde),
         "encrypt": exposure.encrypt,
         "note": (exposure.via == Via::Tunnel).then_some(TUNNEL_NOTE),
         "fields": spec.fields.iter().map(|f| json!({
-            "name": f.name, "tag": if plan.store.is_some() { f.secret_name() } else { &f.name }, "label": f.label, "optional": f.optional,
+            "name": f.name, "label": f.label, "optional": f.optional,
             "placeholder": f.placeholder, "pattern": f.pattern, "help_url": f.help_url,
         })).collect::<Vec<_>>(),
     });

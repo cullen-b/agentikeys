@@ -9,6 +9,8 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::process::{Command, Stdio};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 /// `destination.store` in a spec: `{"type": "gcp_secret_manager", ...store options}`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -27,6 +29,37 @@ impl StoreSpec {
             StoreSpec::AwsSecretsManager(o) => aws::secrets_manager(o),
             StoreSpec::AwsParameterStore(o) => aws::parameter_store(o),
             StoreSpec::AzureKeyVault(o) => azure::backend(o),
+        }
+    }
+
+    /// The spec for a store the user ticked on the page. Starts from `suggested` when it's the same kind,
+    /// so options the agent set (region, profile, KMS key) carry over.
+    pub fn chosen(kind: &str, choice: Option<&str>, suggested: Option<&StoreSpec>) -> Option<StoreSpec> {
+        let mut spec = match suggested.filter(|s| s.kind() == kind) {
+            Some(s) => s.clone(),
+            None => match kind {
+                "gcp_secret_manager" => StoreSpec::GcpSecretManager(gcp::Options { project: None }),
+                "aws_secrets_manager" => StoreSpec::AwsSecretsManager(Default::default()),
+                "aws_parameter_store" => StoreSpec::AwsParameterStore(Default::default()),
+                "azure_key_vault" => StoreSpec::AzureKeyVault(azure::Options { vault: String::new(), subscription: None }),
+                _ => return None,
+            },
+        };
+        match (&mut spec, choice) {
+            (StoreSpec::GcpSecretManager(o), Some(c)) => o.project = Some(c.into()),
+            (StoreSpec::AzureKeyVault(o), Some(c)) => o.vault = c.into(),
+            (StoreSpec::AzureKeyVault(_), None) => return None,
+            _ => {}
+        }
+        Some(spec)
+    }
+
+    /// The choice (project, vault) this spec points at, to preselect it on the page.
+    pub fn choice(&self) -> Option<String> {
+        match self {
+            StoreSpec::GcpSecretManager(o) => o.project.clone(),
+            StoreSpec::AzureKeyVault(o) => Some(o.vault.clone()),
+            _ => None,
         }
     }
 
@@ -52,6 +85,69 @@ pub trait SecretStore {
     /// Stores `value` under `name`, creating the secret or adding a new version, and returns a
     /// reference to it (resource name, ARN or URL) that apps or tools can resolve later.
     fn put(&self, name: &str, value: &str) -> Result<String>;
+
+    /// The name to store `wanted` under, for stores with stricter naming rules.
+    fn name_for(&self, wanted: &str) -> String {
+        wanted.to_string()
+    }
+}
+
+/// A store found on this computer, offered on the page.
+#[derive(Debug, Clone, Serialize)]
+pub struct Offer {
+    /// `StoreSpec` type tag.
+    pub kind: &'static str,
+    pub service: String,
+    /// Account, region or similar.
+    pub detail: String,
+    /// Why it can't be used right now, and how to fix it; shown disabled. Having nothing to pick
+    /// (no projects or vaults found) is worked out later, as the agent may suggest one.
+    pub problem: Option<String>,
+    /// What the user picks between (e.g. "Project"), when there's a choice to make.
+    pub choice_label: Option<&'static str>,
+    pub choices: Vec<String>,
+    pub default_choice: Option<String>,
+}
+
+impl Offer {
+    pub fn unavailable(kind: &'static str, service: impl Into<String>, problem: impl Into<String>) -> Offer {
+        Offer {
+            kind,
+            service: service.into(),
+            detail: String::new(),
+            problem: Some(problem.into()),
+            choice_label: None,
+            choices: Vec::new(),
+            default_choice: None,
+        }
+    }
+}
+
+/// Looks for usable stores in parallel (read-only CLI calls), giving up on any that take over 20s.
+/// Stores whose CLI isn't installed are left out.
+pub fn detect() -> Vec<Offer> {
+    let detectors: [fn() -> Vec<Offer>; 3] = [gcp::detect, aws::detect, azure::detect];
+    let (tx, rx) = mpsc::channel();
+    for (i, detector) in detectors.into_iter().enumerate() {
+        let tx = tx.clone();
+        std::thread::spawn(move || tx.send((i, detector())));
+    }
+    drop(tx);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut found = Vec::new();
+    while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+        match rx.recv_timeout(left) {
+            Ok(r) => found.push(r),
+            Err(_) => break,
+        }
+    }
+    found.sort_by_key(|(i, _)| *i);
+    found.into_iter().flat_map(|(_, offers)| offers).collect()
+}
+
+/// True when `err` came from the CLI not being installed.
+pub fn not_installed(err: &anyhow::Error) -> bool {
+    err.chain().any(|c| c.downcast_ref::<std::io::Error>().is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound))
 }
 
 /// Runs a CLI, feeding `input` on stdin, and returns stdout. Refuses to run if `secret` appears in

@@ -1,10 +1,9 @@
 //! AWS Secrets Manager and Systems Manager Parameter Store via the `aws` CLI.
 
-use super::{SecretStore, run};
+use super::{Offer, SecretStore, not_installed, run};
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::io::ErrorKind;
 use std::process::Command;
 
 const INSTALL_URL: &str = "https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html";
@@ -20,6 +19,37 @@ pub struct SecretsManagerOptions {
 }
 
 pub type ParameterStoreOptions = SecretsManagerOptions;
+
+/// Offers Secrets Manager and Parameter Store when aws is signed in with a region.
+pub fn detect() -> Vec<Offer> {
+    detect_with(&Aws::new(Service::SecretsManager, &SecretsManagerOptions::default(), "aws"))
+}
+
+fn detect_with(aws: &Aws) -> Vec<Offer> {
+    let (detail, problem) = match run(aws.command(&["sts", "get-caller-identity"]), None, None) {
+        Err(e) if not_installed(&e) => return Vec::new(),
+        Err(_) => (String::new(), Some("Not signed in: run `aws configure` or `aws sso login`".to_string())),
+        Ok(out) => {
+            let account = serde_json::from_str::<Value>(&out).ok().and_then(|v| v["Account"].as_str().map(String::from));
+            match aws.region() {
+                Some(r) => (format!("Account {} · {r}", account.unwrap_or_default()), None),
+                None => (String::new(), Some("No region set: run `aws configure set region <region>`".to_string())),
+            }
+        }
+    };
+    [("aws_secrets_manager", "AWS Secrets Manager"), ("aws_parameter_store", "AWS Systems Manager Parameter Store")]
+        .into_iter()
+        .map(|(kind, service)| Offer {
+            kind,
+            service: service.into(),
+            detail: detail.clone(),
+            problem: problem.clone(),
+            choice_label: None,
+            choices: Vec::new(),
+            default_choice: None,
+        })
+        .collect()
+}
 
 pub fn secrets_manager(opts: &SecretsManagerOptions) -> Box<dyn SecretStore> {
     Box::new(Aws::new(Service::SecretsManager, opts, "aws"))
@@ -98,9 +128,17 @@ impl Aws {
 
     /// STS works without a region but the secret services don't, so catch a missing one before the page opens.
     fn check_region(&self) -> Result<()> {
-        let from_env = ["AWS_REGION", "AWS_DEFAULT_REGION"].iter().any(|v| std::env::var(v).is_ok_and(|r| !r.is_empty()));
-        if self.opts.region.is_some() || from_env {
-            return Ok(());
+        if self.region().is_none() {
+            bail!("no AWS region is set: add \"region\" to destination.store, or run `aws configure set region <region>`");
+        }
+        Ok(())
+    }
+
+    /// The region from the spec, the environment, or `aws configure`.
+    fn region(&self) -> Option<String> {
+        let from_env = ["AWS_REGION", "AWS_DEFAULT_REGION"].iter().find_map(|v| std::env::var(v).ok().filter(|r| !r.is_empty()));
+        if let Some(r) = self.opts.region.clone().or(from_env) {
+            return Some(r);
         }
         let mut cmd = Command::new(&self.bin);
         cmd.args(["configure", "get", "region"]);
@@ -108,10 +146,7 @@ impl Aws {
             cmd.args(["--profile", p]);
         }
         // `configure get` exits non-zero when the value is unset.
-        match run(cmd, None, None) {
-            Ok(r) if !r.trim().is_empty() => Ok(()),
-            _ => bail!("no AWS region is set: add \"region\" to destination.store, or run `aws configure set region <region>`"),
-        }
+        run(cmd, None, None).ok().map(|r| r.trim().to_string()).filter(|r| !r.is_empty())
     }
 
     fn parameter_store_put(&self, name: &str, value: &str) -> Result<String> {
@@ -147,7 +182,7 @@ impl SecretStore for Aws {
             }
         }
         let identity = run(self.command(&["sts", "get-caller-identity"]), None, None).map_err(|e| {
-            if e.chain().any(|c| c.downcast_ref::<std::io::Error>().is_some_and(|io| io.kind() == ErrorKind::NotFound)) {
+            if not_installed(&e) {
                 anyhow!("the aws CLI isn't installed. Install it from {INSTALL_URL}, then run `aws configure` or `aws sso login`")
             } else {
                 let profile = self.opts.profile.as_ref().map(|p| format!(" --profile {p}")).unwrap_or_default();

@@ -1,3 +1,4 @@
+mod save;
 mod seal;
 mod spec;
 mod store;
@@ -9,13 +10,11 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
 use spec::Spec;
-use std::collections::BTreeMap;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::time::{Duration, Instant};
-use store::GitStatus;
 use transport::Via;
 
 /// Collect secrets from the user in a browser page and write them to a file, without the agent seeing them.
@@ -84,19 +83,11 @@ struct Receipt {
     /// Something to pass on to the user.
     #[serde(skip_serializing_if = "Option::is_none")]
     note: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    format: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    store: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     keys: Vec<String>,
-    /// Field name -> where the store keeps it (not secret).
-    #[serde(skip_serializing_if = "BTreeMap::is_empty", default)]
-    references: BTreeMap<String, String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    gitignore: Option<String>,
+    /// Every place the user chose that the values were saved to.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    saved_to: Vec<save::SavedTo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
 }
@@ -166,7 +157,8 @@ fn request(
     };
     let spec = Spec::parse(&text)?;
     let cwd = std::env::current_dir()?;
-    let plan = store::plan(&spec, &cwd)?;
+    // Checked here too, so a bad file fails straight away instead of in the background.
+    let file = store::plan_file(&spec, &cwd)?;
 
     let via = match via {
         Some(v) => v,
@@ -178,8 +170,11 @@ fn request(
         return spawn_detached(&text, via, timeout, no_open, &cwd);
     }
 
+    let detecting = std::thread::spawn(stores::detect);
     let (server, exposure) = transport::start(via)?;
-    let outcome = web::serve(&spec, &plan, server, &exposure, Duration::from_secs(timeout), |url| {
+    let offers = detecting.join().unwrap_or_default();
+    let places = save::Places::new(&spec, file, offers)?;
+    let outcome = web::serve(&spec, &places, server, &exposure, Duration::from_secs(timeout), |url| {
         let opened = via == Via::Local && !no_open && open_browser(url);
         eprintln!(
             "agentikeys: {} {url}",
@@ -196,28 +191,10 @@ fn request(
     }
     drop(exposure);
 
-    let file = plan.file.as_ref();
-    let path = file.map(|f| f.path.display().to_string());
-    let store = spec.destination.store.as_ref().map(|s| s.kind().to_string());
     Ok(match outcome {
-        web::Outcome::Saved(keys, references) => Receipt {
-            path,
-            format: file.map(|f| f.format.as_str().into()),
-            store,
-            keys,
-            references,
-            gitignore: file
-                .and_then(|f| match f.git {
-                    GitStatus::NotInRepo => Some("not_in_repo"),
-                    GitStatus::AlreadyIgnored => Some("already_ignored"),
-                    GitStatus::WillIgnore => Some("added"),
-                    GitStatus::References => None,
-                })
-                .map(Into::into),
-            ..Receipt::status("saved")
-        },
-        web::Outcome::Cancelled => Receipt { path, store, ..Receipt::status("cancelled") },
-        web::Outcome::TimedOut => Receipt { path, store, ..Receipt::status("timed_out") },
+        web::Outcome::Saved(keys, saved_to) => Receipt { keys, saved_to, ..Receipt::status("saved") },
+        web::Outcome::Cancelled(saved_to) => Receipt { saved_to, ..Receipt::status("cancelled") },
+        web::Outcome::TimedOut(saved_to) => Receipt { saved_to, ..Receipt::status("timed_out") },
     })
 }
 
