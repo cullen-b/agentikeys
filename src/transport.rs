@@ -167,13 +167,48 @@ fn start_tunnel(port: u16) -> Result<(Child, String)> {
         let Ok(line) = rx.recv_timeout(left) else { break };
         match host {
             None => host = trycloudflare_host(&line),
-            Some(h) if line.contains("Registered tunnel connection") => return Ok((child, h)),
+            Some(h) if line.contains("Registered tunnel connection") => {
+                wait_until_published(&h);
+                return Ok((child, h));
+            }
             Some(_) => {}
         }
     }
     let _ = child.kill();
     let _ = child.wait();
     bail!("cloudflared didn't open a tunnel within 45 seconds; try again, or use --via tailscale")
+}
+
+/// New tunnel names take a moment to appear in DNS, and an early lookup gets "doesn't exist" cached for
+/// a minute. Ask a public resolver directly (not the system cache) until the name resolves, up to 20s.
+fn wait_until_published(host: &str) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while std::time::Instant::now() < deadline {
+        if resolves_publicly(host).unwrap_or(false) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
+/// Minimal DNS A query to 1.1.1.1; true when it answers with at least one record.
+fn resolves_publicly(host: &str) -> std::io::Result<bool> {
+    let sock = std::net::UdpSocket::bind("0.0.0.0:0")?;
+    sock.set_read_timeout(Some(Duration::from_secs(1)))?;
+    sock.connect("1.1.1.1:53")?;
+    let mut id = [0u8; 2];
+    getrandom::fill(&mut id).map_err(std::io::Error::other)?;
+    let mut query = vec![id[0], id[1], 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0];
+    for label in host.split('.') {
+        query.push(label.len() as u8);
+        query.extend_from_slice(label.as_bytes());
+    }
+    query.extend_from_slice(&[0, 0, 1, 0, 1]);
+    sock.send(&query)?;
+    let mut buf = [0u8; 512];
+    let n = sock.recv(&mut buf)?;
+    let answers = u16::from_be_bytes([buf[6], buf[7]]);
+    Ok(n >= 12 && buf[..2] == id && buf[3] & 0x0f == 0 && answers > 0)
 }
 
 fn trycloudflare_host(line: &str) -> Option<String> {
@@ -191,5 +226,12 @@ mod tests {
         let line = "2026-10-29T21:00:00Z INF |  https://quiet-river-abc-123.trycloudflare.com                    |";
         assert_eq!(trycloudflare_host(line).as_deref(), Some("quiet-river-abc-123.trycloudflare.com"));
         assert_eq!(trycloudflare_host("see https://www.cloudflare.com/website-terms/"), None);
+    }
+
+    #[test]
+    #[ignore = "needs network"]
+    fn public_dns_check() {
+        assert!(resolves_publicly("cloudflare.com").unwrap());
+        assert!(!resolves_publicly("agentikeys-does-not-exist-zz9.trycloudflare.com").unwrap());
     }
 }
