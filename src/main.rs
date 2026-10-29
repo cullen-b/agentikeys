@@ -2,6 +2,7 @@ mod log;
 mod phrase;
 mod save;
 mod seal;
+mod setup;
 mod spec;
 mod store;
 mod stores;
@@ -60,6 +61,19 @@ enum Cmd {
     Config {
         #[command(subcommand)]
         set: Option<ConfigSet>,
+    },
+    /// Teach every AI coding agent on this machine to use agentikeys (adds instructions to each
+    /// installed harness's user-level instructions file).
+    Setup {
+        /// Show what would change without writing anything.
+        #[arg(long)]
+        dry_run: bool,
+        /// Remove the instructions again.
+        #[arg(long)]
+        uninstall: bool,
+        /// Just print the instructions, e.g. to paste into a project's AGENTS.md or Cursor's rules.
+        #[arg(long)]
+        print: bool,
     },
     /// Show recent requests: which keys, saved where, for which project. Never values.
     Log {
@@ -148,6 +162,7 @@ fn main() -> ExitCode {
         Cmd::Wait { id, timeout } => wait(&id, timeout).unwrap_or_else(Receipt::error),
         Cmd::Config { set } => return plain(config(set)),
         Cmd::Phrase { reset } => return plain(show_phrase(reset)),
+        Cmd::Setup { dry_run, uninstall, print } => return plain(run_setup(dry_run, uninstall, print)),
         Cmd::Log { n, key, json } => return plain(show_log(n, key.as_deref(), json)),
     };
     println!("{}", serde_json::to_string(&receipt).expect("receipt serializes"));
@@ -163,6 +178,60 @@ fn plain(result: Result<()>) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn run_setup(dry_run: bool, uninstall: bool, print: bool) -> Result<()> {
+    use std::io::IsTerminal;
+    if print {
+        println!("{}", setup::INSTRUCTIONS);
+        return Ok(());
+    }
+    let home = PathBuf::from(std::env::var_os("HOME").context("HOME isn't set")?);
+    let action = if uninstall { setup::Action::Uninstall } else { setup::Action::Install };
+    let reports = setup::run(&home, action, dry_run)?;
+    if reports.is_empty() {
+        println!("No supported AI coding agents found in {}.", home.display());
+    }
+    for r in &reports {
+        let what = match (&r.change, dry_run) {
+            (setup::Change::Added, false) => "added to",
+            (setup::Change::Added, true) => "would be added to",
+            (setup::Change::Updated, false) => "updated in",
+            (setup::Change::Updated, true) => "would be updated in",
+            (setup::Change::Removed, false) => "removed from",
+            (setup::Change::Removed, true) => "would be removed from",
+            (setup::Change::Unchanged, _) => "already up to date in",
+            (setup::Change::NotPresent, _) => "not present in",
+        };
+        println!("  {:<15} instructions {what} {}", r.harness, r.file.display());
+    }
+    if uninstall {
+        return Ok(());
+    }
+    if home.join(".cursor").is_dir() {
+        println!("  {:<15} has no settings file for this: paste `agentikeys setup --print` into Settings > Rules", "Cursor");
+    }
+    if which("agentikeys").is_none() {
+        println!("\nNote: `agentikeys` isn't on your PATH, so agents can't run it yet. Install it with `cargo install --path .` or put the binary on your PATH.");
+    }
+    println!();
+    if which("tailscale").is_some() {
+        println!("Working with agents from another device? Run `agentikeys config via tailscale` so key pages reach you over your tailnet.");
+    } else {
+        println!("Working with agents from another device? Tailscale is the recommended way to reach key pages privately: https://tailscale.com/download");
+    }
+    if std::io::stdout().is_terminal() && !dry_run {
+        let (phrase, _) = phrase::get_or_create()?;
+        println!("Your security phrase is {phrase}. Every real agentikeys page shows it; never enter keys on a page that doesn't.");
+    } else {
+        println!("Run `agentikeys phrase` yourself to see your security phrase, which every real agentikeys page shows.");
+    }
+    Ok(())
+}
+
+/// Full path of `program` if it's on PATH.
+fn which(program: &str) -> Option<PathBuf> {
+    std::env::split_paths(&std::env::var_os("PATH")?).map(|d| d.join(program)).find(|p| p.is_file())
 }
 
 fn show_log(n: usize, key: Option<&str>, json: bool) -> Result<()> {
