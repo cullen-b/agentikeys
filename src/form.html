@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta name="theme-color" content="#f3f5f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#15171b" media="(prefers-color-scheme: dark)">
+<title>agentikeys</title>
+<style nonce="__NONCE__">
+:root {
+  --bg: #f3f5f7; --panel: #ffffff; --ink: #1a1d23; --muted: #5b6270; --line: #dde1e7;
+  --accent: #0e6b63; --accent-ink: #ffffff; --dest: #e8f2f0; --warn: #8a5300; --danger: #b3261e;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, Ubuntu, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #15171b; --panel: #1d2025; --ink: #e9ebee; --muted: #9aa1ad; --line: #30343b;
+    --accent: #4db3a7; --accent-ink: #0b1f1d; --dest: #1b2b29; --warn: #e0a84a; --danger: #f2827a;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; min-height: 100vh; background: var(--bg); color: var(--ink);
+  font: 15px/1.5 var(--sans); -webkit-font-smoothing: antialiased;
+  display: flex; align-items: flex-start; justify-content: center; padding: 8vh 16px 48px;
+}
+main {
+  width: 100%; max-width: 520px; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 14px; padding: 28px 28px 24px;
+}
+.brand { font-size: 13px; color: var(--muted); margin: 0 0 18px; display: flex; align-items: center; gap: 7px; }
+.brand svg { color: var(--accent); }
+h1 { text-wrap: balance; font-size: 22px; line-height: 1.25; font-weight: 650; letter-spacing: -0.01em; margin: 0 0 8px; }
+.reason { color: var(--muted); margin: 0 0 20px; white-space: pre-wrap; }
+.dest {
+  display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; align-items: start;
+  background: var(--dest); border-left: 3px solid var(--accent); border-radius: 4px 10px 10px 4px;
+  padding: 12px 14px; margin: 0 0 24px;
+}
+.dest svg { grid-row: span 3; color: var(--accent); margin-top: 2px; }
+.dest .lead { font-size: 13px; color: var(--muted); }
+.dest .path { font-family: var(--mono); font-size: 13.5px; word-break: break-all; }
+.dest .note { font-size: 13px; color: var(--muted); }
+.field { margin: 0 0 18px; }
+.field-head { display: flex; align-items: baseline; gap: 8px; margin: 0 0 6px; }
+.field-head label { font-weight: 600; }
+.field-head .name { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.field-head .opt { font-size: 13px; color: var(--muted); }
+.field-head a { margin-left: auto; font-size: 13px; color: var(--accent); text-underline-offset: 2px; }
+.input-row { display: flex; gap: 8px; }
+input {
+  flex: 1; min-width: 0; font: 14px/1.4 var(--mono); color: var(--ink); background: var(--panel);
+  border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px;
+}
+input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-color: transparent; }
+input[aria-invalid="true"] { border-color: var(--danger); }
+button {
+  font: 600 14px/1 var(--sans); border-radius: 8px; padding: 11px 16px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+  touch-action: manipulation; transition: background-color 120ms, border-color 120ms;
+}
+button:hover:not(:disabled) { border-color: var(--muted); }
+button.primary:hover:not(:disabled) { filter: brightness(1.08); }
+@media (prefers-reduced-motion: reduce) { button { transition: none; } }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button.reveal { font-weight: 500; font-size: 13px; padding: 0 12px; min-width: 64px; color: var(--muted); }
+button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+button:disabled { opacity: 0.6; cursor: default; }
+.msg { font-size: 13px; margin: 6px 0 0; }
+.msg.error { color: var(--danger); }
+.msg.warn { color: var(--warn); }
+.banner { color: var(--danger); margin: 0 0 16px; }
+footer { border-top: 1px solid var(--line); margin-top: 24px; padding-top: 18px; }
+footer p { font-size: 13px; color: var(--muted); margin: 0 0 16px; }
+.actions { display: flex; justify-content: flex-end; gap: 10px; }
+.done h1 { margin-bottom: 6px; }
+.done p { color: var(--muted); margin: 0; }
+@media (max-width: 480px) { main { padding: 22px 18px 18px; } body { padding-top: 16px; } }
+</style>
+</head>
+<body>
+<main id="app"></main>
+<script type="application/json" id="data">__DATA__</script>
+<script nonce="__NONCE__">
+"use strict";
+const DATA = JSON.parse(document.getElementById("data").textContent);
+const app = document.getElementById("app");
+const ICON_KEY = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="15" r="4"/><path d="M10.8 12.2 20 3m-4 4 3 3m-6-1 2 2"/></svg>';
+const ICON_FILE = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8z"/><path d="M14 3v5h5"/></svg>';
+const GIT_NOTE = {
+  already_ignored: "Already ignored by git.",
+  will_ignore: "Will be added to .gitignore so it is never committed.",
+  not_in_repo: "Not inside a git repository.",
+};
+
+function el(tag, attrs = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "text") node.textContent = v;
+    else if (k === "html") node.innerHTML = v; // only used for the constant icons above
+    else node.setAttribute(k, v);
+  }
+  for (const c of children) if (c) node.append(c);
+  return node;
+}
+
+function patternFor(f) {
+  if (!f.pattern) return null;
+  try { return new RegExp(f.pattern); } catch { return null; }
+}
+
+function render() {
+  const inputs = [];
+  const brand = el("p", { class: "brand", html: ICON_KEY });
+  brand.append("agentikeys");
+  const dest = el("div", { class: "dest", html: ICON_FILE },
+    el("span", { class: "lead", text: `Saves to this ${DATA.format} file` }),
+    el("span", { class: "path", translate: "no", text: DATA.path }),
+    el("span", { class: "note", text: GIT_NOTE[DATA.git] || "" }));
+  const banner = el("p", { class: "banner", role: "alert", hidden: "" });
+  const form = el("form", { novalidate: "" });
+
+  DATA.fields.forEach((f, i) => {
+    const id = `f${i}`;
+    const input = el("input", {
+      id, name: f.name, type: "password", autocomplete: "off", spellcheck: "false", autocapitalize: "off",
+      "aria-describedby": `${id}-msg`,
+    });
+    if (f.placeholder) input.placeholder = f.placeholder;
+    const what = f.label || f.name;
+    const reveal = el("button", { type: "button", class: "reveal", text: "Show", "aria-controls": id, "aria-label": `Show ${what}` });
+    reveal.addEventListener("click", () => {
+      const hidden = input.type === "password";
+      input.type = hidden ? "text" : "password";
+      reveal.textContent = hidden ? "Hide" : "Show";
+      reveal.setAttribute("aria-label", `${reveal.textContent} ${what}`);
+    });
+    const head = el("div", { class: "field-head" }, el("label", { for: id, text: what }));
+    if (f.label && f.label !== f.name) head.append(el("span", { class: "name", translate: "no", text: f.name }));
+    if (f.optional) head.append(el("span", { class: "opt", text: "Optional" }));
+    if (f.help_url) head.append(el("a", { href: f.help_url, target: "_blank", rel: "noopener noreferrer", text: "Where do I find this?" }));
+    const msg = el("p", { class: "msg", id: `${id}-msg`, "aria-live": "polite" });
+    input.addEventListener("input", () => { input.removeAttribute("aria-invalid"); msg.textContent = ""; msg.className = "msg"; warned.delete(i); });
+    form.append(el("div", { class: "field" }, head, el("div", { class: "input-row" }, input, reveal), msg));
+    inputs.push({ f, input, msg });
+  });
+
+  const n = DATA.fields.length;
+  const save = el("button", { type: "submit", class: "primary", text: n === 1 ? "Save key" : `Save ${n} keys` });
+  const cancel = el("button", { type: "button", text: "Cancel" });
+  form.append(el("footer", {},
+    el("p", { text: "Your agent learns which keys were saved, never what you typed." }),
+    el("div", { class: "actions" }, cancel, save)));
+
+  const warned = new Set();
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    banner.hidden = true;
+    const values = {};
+    let blocked = false;
+    inputs.forEach(({ f, input, msg }, i) => {
+      const v = input.value.trim();
+      if (!v) {
+        if (!f.optional) {
+          input.setAttribute("aria-invalid", "true");
+          msg.className = "msg error";
+          msg.textContent = "Enter a value, or cancel if you don't have one.";
+          blocked = true;
+        }
+        return;
+      }
+      const re = patternFor(f);
+      if (re && !re.test(v) && !warned.has(i)) {
+        msg.className = "msg warn";
+        msg.textContent = "This doesn't match the format your agent expected. Check it, or save again to keep it.";
+        warned.add(i);
+        blocked = true;
+      }
+      values[f.name] = v;
+    });
+    if (blocked) {
+      const first = inputs.find(({ msg }) => msg.textContent);
+      if (first) first.input.focus();
+      return;
+    }
+    save.disabled = cancel.disabled = true;
+    const label = save.textContent;
+    save.textContent = "Saving…";
+    const res = await post("submit", { values });
+    if (res.ok) {
+      const saved = res.body.saved.length;
+      finish("Saved", `${saved === 1 ? "1 key" : saved + " keys"} written to ${DATA.path}. You can close this tab and go back to your chat.`);
+    } else {
+      banner.textContent = res.body.error || "Couldn't save. Check the terminal running agentikeys.";
+      banner.hidden = false;
+      save.textContent = label;
+      save.disabled = cancel.disabled = false;
+    }
+  });
+
+  cancel.addEventListener("click", async () => {
+    save.disabled = cancel.disabled = true;
+    await post("cancel", {});
+    finish("Cancelled", "Nothing was saved. You can close this tab and go back to your chat.");
+  });
+
+  app.append(brand, el("h1", { text: DATA.title }));
+  if (DATA.reason) app.append(el("p", { class: "reason", text: DATA.reason }));
+  app.append(dest, banner, form);
+  inputs[0].input.focus();
+}
+
+async function post(action, body) {
+  try {
+    const r = await fetch(`${location.pathname}/${action}`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    return { ok: r.ok, body: await r.json().catch(() => ({})) };
+  } catch {
+    return { ok: false, body: { error: "agentikeys stopped. Ask your agent to start a new request." } };
+  }
+}
+
+function finish(title, text) {
+  app.replaceChildren(el("div", { class: "done", role: "status" }, el("h1", { text: title }), el("p", { text })));
+  document.title = `agentikeys: ${title.toLowerCase()}`;
+  window.close();
+}
+
+render();
+</script>
+</body>
+</html>
