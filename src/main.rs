@@ -1,6 +1,7 @@
 mod seal;
 mod spec;
 mod store;
+mod stores;
 mod transport;
 mod web;
 
@@ -8,6 +9,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
 use spec::Spec;
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -86,8 +88,13 @@ struct Receipt {
     path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     format: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    store: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     keys: Vec<String>,
+    /// Field name -> where the store keeps it (not secret).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty", default)]
+    references: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     gitignore: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -189,24 +196,28 @@ fn request(
     }
     drop(exposure);
 
-    let path = Some(plan.path.display().to_string());
+    let file = plan.file.as_ref();
+    let path = file.map(|f| f.path.display().to_string());
+    let store = spec.destination.store.as_ref().map(|s| s.kind().to_string());
     Ok(match outcome {
-        web::Outcome::Saved(keys) => Receipt {
+        web::Outcome::Saved(keys, references) => Receipt {
             path,
-            format: Some(plan.format.as_str().into()),
+            format: file.map(|f| f.format.as_str().into()),
+            store,
             keys,
-            gitignore: Some(
-                match plan.git {
-                    GitStatus::NotInRepo => "not_in_repo",
-                    GitStatus::AlreadyIgnored => "already_ignored",
-                    GitStatus::WillIgnore => "added",
-                }
-                .into(),
-            ),
+            references,
+            gitignore: file
+                .and_then(|f| match f.git {
+                    GitStatus::NotInRepo => Some("not_in_repo"),
+                    GitStatus::AlreadyIgnored => Some("already_ignored"),
+                    GitStatus::WillIgnore => Some("added"),
+                    GitStatus::References => None,
+                })
+                .map(Into::into),
             ..Receipt::status("saved")
         },
-        web::Outcome::Cancelled => Receipt { path, ..Receipt::status("cancelled") },
-        web::Outcome::TimedOut => Receipt { path, ..Receipt::status("timed_out") },
+        web::Outcome::Cancelled => Receipt { path, store, ..Receipt::status("cancelled") },
+        web::Outcome::TimedOut => Receipt { path, store, ..Receipt::status("timed_out") },
     })
 }
 
