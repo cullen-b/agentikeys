@@ -26,7 +26,8 @@ SHA-256 checksum, and installs it into `~/.local/bin`. Prefer to build it yourse
 a short block to each one's user-level instructions file (`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`,
 `~/.gemini/GEMINI.md`, and so on). Run `agentikeys setup --dry-run` to see what it would change,
 `--uninstall` to remove it, or `--print` to get the text for anywhere else (a project's `AGENTS.md`,
-Cursor's Settings → Rules).
+Cursor's Settings → Rules). It also asks how long a key page stays open before it expires (change it
+later with `agentikeys config expiry <minutes>`).
 
 That's it. Next time an agent needs a key, it gives you a link.
 
@@ -110,7 +111,7 @@ The receipt (one JSON line on stdout) never contains values:
 | `saved` | 0 |
 | `error` (see `error`) | 1 |
 | `cancelled` | 2 |
-| `timed_out` (default 600 s, `--timeout`) | 3 |
+| `timed_out` (after the expiry set in `agentikeys setup`, default 10 minutes; `--timeout` in seconds overrides it) | 3 |
 | `pending` from `wait` | 4 |
 
 `request` exits 0 with `pending` once the link is ready. A pending receipt may carry a `note` for
@@ -118,8 +119,9 @@ the user. `cancelled` and `timed_out` receipts still list `saved_to` if some pla
 
 ## Secret stores
 
-The page offers every secret store whose CLI is installed; stores you're signed in to can be ticked,
-the rest show how to sign in. Each uses its official CLI and the login you already have. Detection
+The page offers only the secret stores that are set up on this computer: CLI installed, signed in, and
+with a project, vault or region to save to. Stores that aren't set up are left off the list, and the
+page says how to set them up instead. Each uses its official CLI and the login you already have. Detection
 only runs read-only commands, and values reach the CLI only on stdin, never as a command-line argument.
 
 | `store.type` | CLI | Docs |
@@ -169,6 +171,7 @@ a sandbox. Saving to a secret store rather than a local file leaves less on disk
 | `agentikeys log` | Recent requests: keys, where saved, which project |
 | `agentikeys phrase` | Show your security phrase (`--reset` for a new one) |
 | `agentikeys config via <mode>` | Default way pages reach you |
+| `agentikeys config expiry <minutes>` | How long a key page stays open (1 to 1440 minutes) |
 
 ## Platforms
 

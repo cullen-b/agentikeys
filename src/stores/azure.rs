@@ -33,7 +33,13 @@ fn detect_with(kv: &KeyVault) -> Vec<Offer> {
         None,
         None,
     ) {
-        Err(e) if not_installed(&e) => return Vec::new(),
+        Err(e) if not_installed(&e) => {
+            return vec![Offer::unavailable(
+                KIND,
+                SERVICE,
+                "Install the Azure CLI (https://learn.microsoft.com/cli/azure/install-azure-cli), then run `az login`",
+            )];
+        }
         Err(_) => return vec![Offer::unavailable(KIND, SERVICE, "Not signed in: run `az login`")],
         Ok(out) => out.trim().to_string(),
     };

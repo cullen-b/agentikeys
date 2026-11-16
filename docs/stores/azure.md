@@ -27,8 +27,8 @@ places. The receipt's `saved_to` entry for it carries the references below.
 | `vault` | yes | Key Vault name (3-24 letters, digits, hyphens), not its URL |
 | `subscription` | no | Subscription name or ID; defaults to the one `az` has selected (`az account show`) |
 
-**On the page**, Key Vault is offered when `az` is installed ([install](https://learn.microsoft.com/cli/azure/install-azure-cli))
-and signed in (`az account show`, else run `az login`), with the vaults `az keyvault list` finds to pick
+**On the page**, Key Vault is offered only when `az` is installed ([install](https://learn.microsoft.com/cli/azure/install-azure-cli))
+and signed in (`az account show`, else run `az login`); otherwise the page says how to set it up. It comes with the vaults `az keyvault list` finds to pick
 from. Listing needs read access to the subscription; without it, a vault the agent suggests in
 `destination.store.vault` is still offered. Before saving, agentikeys re-checks sign-in and names. It
 doesn't contact the vault until it saves: a reachability check needs read permissions a write-only

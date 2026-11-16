@@ -60,6 +60,14 @@ h1 { text-wrap: balance; font-size: 22px; line-height: 1.25; font-weight: 650; l
 .place .where { font-family: var(--mono); font-size: 13px; word-break: break-all; }
 .place .detail, .place .names { font-size: 13px; color: var(--muted); }
 .place .problem { font-size: 13px; color: var(--warn); }
+.setup { font-size: 13px; color: var(--muted); border: 1px dashed var(--line); border-radius: 10px; padding: 10px 14px; margin: 0 0 8px; }
+.setup p { margin: 0 0 4px; }
+.setup ul { margin: 0; padding-left: 18px; }
+.setup li { margin: 4px 0 0; }
+.setup p:last-child { margin: 8px 0 0; }
+.setup strong { color: var(--ink); font-weight: 600; }
+.setup code { font-family: var(--mono); font-size: 12px; }
+.setup a { color: var(--accent); }
 .place .done { font-size: 13px; color: var(--accent); font-weight: 600; }
 .place .pick { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 13px; color: var(--muted); }
 .place code, footer code { font-family: var(--mono); font-size: 12px; }
@@ -393,6 +401,7 @@ function placesEl() {
     fieldset.append(row);
     rows.push({ p, box, select, status, done: false });
   });
+  if (DATA.needs_setup.length) fieldset.append(setupEl());
   const label = (r) => r.select ? `${r.p.service} (${r.select.value})` : r.p.location || r.p.service;
   return {
     el: fieldset,
@@ -407,6 +416,20 @@ function placesEl() {
     anyDone: () => rows.some((r) => r.done),
     doneNames: () => rows.filter((r) => r.done).map(label).join(" and "),
   };
+}
+
+// Cloud stores that aren't set up on this computer: not offered, just how to set them up.
+function setupEl() {
+  const linkify = (part) => part.split(/(https:\/\/[^\s)]+)/).map((bit) =>
+    bit.startsWith("https://") ? el("a", { href: bit, target: "_blank", rel: "noopener noreferrer", text: bit }) : bit);
+  const list = el("ul", {});
+  for (const s of DATA.needs_setup) {
+    const item = el("li", {}, el("strong", { text: s.service }), ": ");
+    list.append(withCode(item, s.how, linkify));
+  }
+  return el("div", { class: "setup" },
+    el("p", { text: "Want to save to a cloud secret manager? These aren't set up on this computer yet:" }), list,
+    el("p", { text: "Set one up, then ask your agent for a new link." }));
 }
 
 const b64u = {

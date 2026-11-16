@@ -39,9 +39,9 @@ enum Cmd {
         /// How the page reaches the user. Defaults to AGENTIKEYS_VIA, then `agentikeys config via`, then auto.
         #[arg(long, value_enum)]
         via: Option<Via>,
-        /// Seconds to wait for the user before giving up.
-        #[arg(long, default_value_t = 600)]
-        timeout: u64,
+        /// Seconds the page stays open before it expires. Defaults to `agentikeys config expiry`, else 10 minutes.
+        #[arg(long)]
+        timeout: Option<u64>,
         /// Don't open this machine's browser (local mode); just print the link.
         #[arg(long)]
         no_open: bool,
@@ -58,7 +58,7 @@ enum Cmd {
         #[arg(long, default_value_t = 60)]
         timeout: u64,
     },
-    /// Show settings, or set how pages reach you by default (`agentikeys config via tailscale`).
+    /// Show settings, or change one (`agentikeys config via tailscale`, `agentikeys config expiry 30`).
     Config {
         #[command(subcommand)]
         set: Option<ConfigSet>,
@@ -103,7 +103,15 @@ enum ConfigSet {
         #[arg(value_enum)]
         via: Via,
     },
+    /// Minutes a key page stays open before it expires.
+    Expiry {
+        #[arg(value_parser = clap::value_parser!(u64).range(1..=MAX_EXPIRY_MINUTES))]
+        minutes: u64,
+    },
 }
+
+const DEFAULT_EXPIRY_MINUTES: u64 = 10;
+const MAX_EXPIRY_MINUTES: u64 = 24 * 60;
 
 /// What the agent gets back. Never contains secret values.
 #[derive(Serialize, Deserialize, Default)]
@@ -231,6 +239,9 @@ fn run_setup(dry_run: bool, uninstall: bool, print: bool) -> Result<()> {
             "Working with agents from another device? Tailscale is the recommended way to reach key pages privately: https://tailscale.com/download"
         );
     }
+    if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() && !dry_run {
+        ask_expiry()?;
+    }
     if std::io::stdout().is_terminal() && !dry_run {
         let (phrase, _) = phrase::get_or_create()?;
         println!(
@@ -242,6 +253,31 @@ fn run_setup(dry_run: bool, uninstall: bool, print: bool) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Asks how long key pages stay open and saves the answer. Enter keeps the current setting.
+fn ask_expiry() -> Result<()> {
+    use std::io::Write;
+    let current = configured_expiry()? / 60;
+    println!();
+    println!("How long should a key page stay open before it expires? Common picks: 5, 10, 30 or 60 minutes.");
+    loop {
+        print!("Minutes (1-{MAX_EXPIRY_MINUTES}) [{current}]: ");
+        std::io::stdout().flush()?;
+        let mut line = String::new();
+        if std::io::stdin().read_line(&mut line)? == 0 {
+            println!();
+            return Ok(());
+        }
+        let answer = line.trim();
+        if answer.is_empty() {
+            return set_expiry(current);
+        }
+        match answer.parse::<u64>() {
+            Ok(m) if (1..=MAX_EXPIRY_MINUTES).contains(&m) => return set_expiry(m),
+            _ => println!("Enter a whole number of minutes from 1 to {MAX_EXPIRY_MINUTES}."),
+        }
+    }
 }
 
 /// Full path of `program` if it's on PATH.
@@ -276,11 +312,15 @@ fn show_phrase(reset: bool) -> Result<()> {
 fn request(
     spec_arg: &str,
     via: Option<Via>,
-    timeout: u64,
+    timeout: Option<u64>,
     no_open: bool,
     foreground: bool,
     receipt: Option<&Path>,
 ) -> Result<Receipt> {
+    let timeout = match timeout {
+        Some(t) => t,
+        None => configured_expiry()?,
+    };
     let text = if spec_arg == "-" {
         let mut s = String::new();
         std::io::stdin().read_to_string(&mut s).context("reading spec from stdin")?;
@@ -415,15 +455,53 @@ fn config_path() -> Result<PathBuf> {
     Ok(config_dir()?.join("config.toml"))
 }
 
+fn read_config() -> Result<toml_edit::DocumentMut> {
+    let path = config_path()?;
+    let text = fs::read_to_string(&path).unwrap_or_default();
+    text.parse().with_context(|| format!("reading {}", path.display()))
+}
+
+fn write_config(doc: &toml_edit::DocumentMut) -> Result<()> {
+    let path = config_path()?;
+    fs::create_dir_all(path.parent().expect("has parent"))?;
+    fs::write(&path, doc.to_string())?;
+    Ok(())
+}
+
+/// Seconds a page stays open when the agent doesn't pass `--timeout`.
+fn configured_expiry() -> Result<u64> {
+    let minutes = match read_config()?.get("expiry_minutes") {
+        None => DEFAULT_EXPIRY_MINUTES,
+        Some(v) => match v.as_integer() {
+            Some(m) if (1..=MAX_EXPIRY_MINUTES as i64).contains(&m) => m as u64,
+            _ => bail!(
+                "{}: expiry_minutes must be a whole number from 1 to {MAX_EXPIRY_MINUTES}",
+                config_path()?.display()
+            ),
+        },
+    };
+    Ok(minutes * 60)
+}
+
+fn set_expiry(minutes: u64) -> Result<()> {
+    let mut doc = read_config()?;
+    doc["expiry_minutes"] = toml_edit::value(minutes as i64);
+    write_config(&doc)?;
+    println!("Key pages will expire after {}.", describe_minutes(minutes));
+    Ok(())
+}
+
+fn describe_minutes(m: u64) -> String {
+    if m == 1 { "1 minute".into() } else { format!("{m} minutes") }
+}
+
 fn configured_via() -> Result<Via> {
     if let Ok(v) = std::env::var("AGENTIKEYS_VIA") {
         return Via::from_str(&v, true)
             .map_err(|_| anyhow::anyhow!("AGENTIKEYS_VIA={v} isn't auto, local, tailscale or tunnel"));
     }
     let path = config_path()?;
-    let Ok(text) = fs::read_to_string(&path) else { return Ok(Via::Auto) };
-    let doc: toml_edit::DocumentMut = text.parse().with_context(|| format!("reading {}", path.display()))?;
-    match doc.get("via").and_then(|v| v.as_str()) {
+    match read_config()?.get("via").and_then(|v| v.as_str()) {
         Some(v) => Via::from_str(v, true).map_err(|_| anyhow::anyhow!("{}: via = {v:?} isn't valid", path.display())),
         None => Ok(Via::Auto),
     }
@@ -435,13 +513,14 @@ fn config(set: Option<ConfigSet>) -> Result<()> {
         None => {
             let via = configured_via()?;
             println!("via = {} (resolves to {} here)", name(via), name(via.resolve()));
+            println!("expiry = {}", describe_minutes(configured_expiry()? / 60));
             println!("config file: {}", path.display());
         }
+        Some(ConfigSet::Expiry { minutes }) => set_expiry(minutes)?,
         Some(ConfigSet::Via { via }) => {
-            let mut doc: toml_edit::DocumentMut = fs::read_to_string(&path).unwrap_or_default().parse()?;
+            let mut doc = read_config()?;
             doc["via"] = toml_edit::value(name(via));
-            fs::create_dir_all(path.parent().expect("has parent"))?;
-            fs::write(&path, doc.to_string())?;
+            write_config(&doc)?;
             println!("agentikeys will reach you via {} by default ({})", name(via), path.display());
         }
     }
