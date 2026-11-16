@@ -126,7 +126,7 @@ impl Offer {
 }
 
 /// Looks for usable stores in parallel (read-only CLI calls), giving up on any that take over 20s.
-/// Stores whose CLI isn't installed are left out.
+/// Stores that aren't set up (CLI missing, signed out) come back with a `problem` saying how to set them up.
 pub fn detect() -> Vec<Offer> {
     let detectors: [fn() -> Vec<Offer>; 3] = [gcp::detect, aws::detect, azure::detect];
     let (tx, rx) = mpsc::channel();

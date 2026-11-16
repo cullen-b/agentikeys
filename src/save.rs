@@ -82,7 +82,7 @@ impl Places {
             offers.push(Offer::unavailable(
                 s.kind(),
                 service,
-                "Its command-line tool isn't installed on this computer",
+                "Couldn't check it's set up: its command-line tool didn't answer in time",
             ));
         }
         let places = Places { file, offers };
@@ -113,7 +113,22 @@ impl Places {
         View { selected: suggested.is_some() && problem.is_none(), choices, default, problem }
     }
 
-    /// The places as the page shows them, with the agent's suggestions preselected.
+    /// Stores left off the page because they aren't set up, with how to set them up. Stores that share
+    /// a fix (AWS's two services) are listed together.
+    pub fn needs_setup(&self, spec: &Spec) -> Vec<Value> {
+        let mut grouped: Vec<(Vec<String>, String)> = Vec::new();
+        for o in &self.offers {
+            let Some(problem) = self.view(spec, o).problem else { continue };
+            match grouped.iter_mut().find(|(_, p)| *p == problem) {
+                Some((services, _)) => services.push(o.service.clone()),
+                None => grouped.push((vec![o.service.clone()], problem)),
+            }
+        }
+        grouped.into_iter().map(|(s, how)| json!({"service": s.join(" and "), "how": how})).collect()
+    }
+
+    /// The places as the page shows them, with the agent's suggestions preselected. Stores that aren't
+    /// set up are left out (see `needs_setup`).
     pub fn for_page(&self, spec: &Spec, tilde: impl Fn(&str) -> String) -> Vec<Value> {
         let mut out = Vec::new();
         if let Some(f) = &self.file {
@@ -130,13 +145,16 @@ impl Places {
         let suggested = spec.destination.store.as_ref();
         for o in &self.offers {
             let View { selected, choices, default, problem } = self.view(spec, o);
+            if problem.is_some() {
+                continue;
+            }
             let names = default
                 .as_deref()
                 .or(if o.choice_label.is_none() { Some("") } else { None })
                 .and_then(|c| StoreSpec::chosen(o.kind, (!c.is_empty()).then_some(c), suggested))
                 .map(|s| renamed(spec, s.backend().as_ref()));
             out.push(json!({
-                "id": o.kind, "service": o.service, "detail": o.detail, "problem": problem,
+                "id": o.kind, "service": o.service, "detail": o.detail,
                 "choice_label": o.choice_label, "choices": choices, "default_choice": default,
                 "selected": selected, "names": names.filter(|n| !n.is_empty()),
             }));
@@ -274,13 +292,36 @@ mod tests {
     }
 
     #[test]
-    fn nothing_to_pick_disables_the_store() {
+    fn stores_that_arent_set_up_are_hidden_with_setup_steps() {
         let spec = spec("{}");
         assert!(Places::new(&spec, None, vec![vault_offer(&[])]).is_err(), "nowhere usable to save");
-        let places = Places::new(&spec, None, vec![vault_offer(&[]), vault_offer(&["v1"])]).unwrap();
+        let signed_out = |kind, service: &str| Offer::unavailable(kind, service, "Not signed in: run `aws configure`");
+        let offers = vec![
+            vault_offer(&[]),
+            signed_out("aws_secrets_manager", "AWS Secrets Manager"),
+            signed_out("aws_parameter_store", "AWS Parameter Store"),
+            Offer { kind: "gcp_secret_manager", service: "Google Cloud".into(), ..vault_offer(&["p1"]) },
+        ];
+        let places = Places::new(&spec, None, offers).unwrap();
         let page = places.for_page(&spec, |p| p.to_string());
-        assert_eq!(page[0]["problem"], "No vaults found for this account");
-        assert_eq!(page[0]["selected"], false);
+        assert_eq!(page.len(), 1, "only the usable store is offered");
+        assert_eq!(page[0]["id"], "gcp_secret_manager");
+        assert_eq!(
+            places.needs_setup(&spec),
+            vec![
+                json!({"service": "Azure Key Vault", "how": "No vaults found for this account"}),
+                json!({"service": "AWS Secrets Manager and AWS Parameter Store", "how": "Not signed in: run `aws configure`"}),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_suggested_store_that_isnt_set_up_is_not_offered() {
+        let spec = spec(r#"{"path":".env","store":{"type":"gcp_secret_manager","project":"p"}}"#);
+        let file = store::plan_file(&spec, &std::env::temp_dir()).unwrap();
+        let places = Places::new(&spec, file, Vec::new()).unwrap();
+        assert_eq!(places.for_page(&spec, |p| p.to_string()).len(), 1, "just the file");
+        assert_eq!(places.needs_setup(&spec).len(), 1);
     }
 
     #[test]

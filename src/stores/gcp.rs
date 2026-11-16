@@ -85,7 +85,13 @@ pub fn detect() -> Vec<Offer> {
 fn detect_with(g: &Gcp) -> Vec<Offer> {
     let list = ["auth", "list", "--filter=status:ACTIVE", "--format=value(account)"];
     let account = match run(g.gcloud(&list), None, None) {
-        Err(e) if not_installed(&e) => return Vec::new(),
+        Err(e) if not_installed(&e) => {
+            return vec![Offer::unavailable(
+                KIND,
+                SERVICE,
+                "Install the Google Cloud CLI (https://cloud.google.com/sdk/docs/install), then run `gcloud auth login`",
+            )];
+        }
         Err(e) => return vec![Offer::unavailable(KIND, SERVICE, format!("gcloud failed: {e:#}"))],
         Ok(out) => out.lines().next().unwrap_or("").trim().to_string(),
     };
@@ -354,7 +360,8 @@ esac"#;
         assert_eq!(offers[0].choices, ["zeta", "alpha", "beta"]);
         assert_eq!(offers[0].default_choice.as_deref(), Some("zeta"));
         assert!(offers[0].problem.is_none() && offers[0].detail.contains("me@example.com"));
-        assert!(detect_with(&Gcp::new(dir.join("nope").to_str().unwrap(), None)).is_empty());
+        let missing = detect_with(&Gcp::new(dir.join("nope").to_str().unwrap(), None));
+        assert!(missing[0].problem.as_deref().is_some_and(|p| p.contains("Install the Google Cloud CLI")));
     }
 
     #[test]

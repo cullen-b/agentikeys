@@ -188,6 +188,7 @@ fn render(page: &Page, exposure: &Exposure, nonce: &str, view: Option<&ViewKey>,
         "phrase_new": page.phrase_new,
         "reason": spec.reason,
         "places": places.for_page(spec, tilde),
+        "needs_setup": places.needs_setup(spec),
         "encrypt": exposure.encrypt,
         "note": (exposure.via == Via::Tunnel).then_some(TUNNEL_NOTE),
         "fields": spec.fields.iter().map(|f| json!({

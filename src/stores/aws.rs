@@ -20,14 +20,17 @@ pub struct SecretsManagerOptions {
 
 pub type ParameterStoreOptions = SecretsManagerOptions;
 
-/// Offers Secrets Manager and Parameter Store when aws is signed in with a region.
+/// Offers Secrets Manager and Parameter Store, with what to set up when aws isn't installed, signed in or given a region.
 pub fn detect() -> Vec<Offer> {
     detect_with(&Aws::new(Service::SecretsManager, &SecretsManagerOptions::default(), "aws"))
 }
 
 fn detect_with(aws: &Aws) -> Vec<Offer> {
     let (detail, problem) = match run(aws.command(&["sts", "get-caller-identity"]), None, None) {
-        Err(e) if not_installed(&e) => return Vec::new(),
+        Err(e) if not_installed(&e) => (
+            String::new(),
+            Some("Install the AWS CLI (https://aws.amazon.com/cli/), then run `aws configure`".to_string()),
+        ),
         Err(_) => (String::new(), Some("Not signed in: run `aws configure` or `aws sso login`".to_string())),
         Ok(out) => {
             let account =
