@@ -200,7 +200,6 @@ pub fn run(mut cmd: Command, input: Option<&str>, secret: Option<&str>) -> Resul
 /// Stand-in CLIs for tests, so no test ever touches a real cloud account.
 #[cfg(all(test, unix))]
 pub mod testing {
-    use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
 
     /// Writes an executable `<dir>/<name>` that records each call's argv to `<dir>/args.<n>` (one per
@@ -212,8 +211,16 @@ pub mod testing {
             "#!/bin/sh\nn=$(( $(cat '{d}/count' 2>/dev/null || echo 0) + 1 ))\necho $n > '{d}/count'\n\
              printf '%s\\n' \"$@\" > '{d}/args.'$n\ncat > '{d}/stdin.'$n\n{body}\n"
         );
-        std::fs::write(&path, script).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // Written by a child `sh`: if this process held the file open for writing, another test forking
+        // meanwhile could inherit that handle and make running the script fail with ETXTBSY on Linux.
+        let mut writer = std::process::Command::new("sh")
+            .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
+            .arg(&path)
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        std::io::Write::write_all(&mut writer.stdin.take().unwrap(), script.as_bytes()).unwrap();
+        assert!(writer.wait().unwrap().success());
         path
     }
 
