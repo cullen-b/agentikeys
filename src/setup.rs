@@ -25,9 +25,11 @@ through you:
 2. Post the returned `url` in the chat as a link for the user to open in their own browser, with any
    `note`. Never open the link yourself, including in built-in or automated browsers. The user picks
    where the values are saved and may paste multi-line keys or upload key files.
-3. Run `agentikeys wait <id>` until `status` isn't `pending` (exit code 4 means still pending; run it
-   again).
-4. Use the receipt's `saved_to` (file paths, store `references`) to wire up configuration. Never read,
+3. Then end your turn (finish other work first if you can), so your harness notifies the user that
+   you need them. Don't sit in `agentikeys wait`: the thread looks busy and nobody comes.
+4. When the user replies, run `agentikeys wait <id>` (exit code 4 means still pending; ask them to
+   finish the page).
+5. Use the receipt's `saved_to` (file paths, store `references`) to wire up configuration. Never read,
    print or log the secret values, and don't open the files they were saved to.
 
 If the user isn't at this machine, add `--via tailscale` (or `--via tunnel` without Tailscale). Check
