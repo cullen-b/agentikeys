@@ -69,8 +69,9 @@ agentikeys started, and always show your security phrase.
 `agentikeys setup` installs these instructions; this is the detail behind them.
 
 ```sh
-agentikeys request < spec.json          # prints {"status":"pending","id":…,"url":…} straight away
-agentikeys wait <id> --timeout 60       # blocks until saved, cancelled or timed out; exit 4 = still pending
+agentikeys request < spec.json          # prints {"status":"pending","id":…,"url":…,"next":…} straight away
+# post the url, then end the turn: that's what makes the harness notify the user, on any machine
+agentikeys wait <id> --timeout 60       # after the user replies; exit 4 = still pending
 agentikeys request --foreground spec.json   # or block until the user is done
 agentikeys log --key STRIPE_SECRET_KEY --json   # was this key set up before, and where?
 ```
@@ -172,7 +173,6 @@ a sandbox. Saving to a secret store rather than a local file leaves less on disk
 | `agentikeys phrase` | Show your security phrase (`--reset` for a new one) |
 | `agentikeys config via <mode>` | Default way pages reach you |
 | `agentikeys config expiry <minutes>` | How long a key page stays open (1 to 1440 minutes) |
-| `agentikeys config notify on\|off` | Desktop notification when a key page is ready for you (default on) |
 
 ## Platforms
 
