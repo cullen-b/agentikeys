@@ -70,7 +70,7 @@ agentikeys started, and always show your security phrase.
 
 ```sh
 agentikeys request < spec.json          # prints {"status":"pending","id":…,"url":…,"next":…} straight away
-# post the url, then end the turn: that's what makes the harness notify the user, on any machine
+# post the url, then ask the user with the harness's question tool (or end the turn), so they're notified anywhere
 agentikeys wait <id> --timeout 60       # after the user replies; exit 4 = still pending
 agentikeys request --foreground spec.json   # or block until the user is done
 agentikeys log --key STRIPE_SECRET_KEY --json   # was this key set up before, and where?

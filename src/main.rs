@@ -431,10 +431,10 @@ fn spawn_detached(spec_text: &str, via: Via, timeout: u64, no_open: bool, cwd: &
     Ok(Receipt { id: Some(id), next, ..Receipt::status("pending") })
 }
 
-/// Ending the turn is what makes any harness notify the user, wherever they are watching from.
+/// A question (or, failing that, the end of the turn) is what makes a harness notify the user, wherever they watch from.
 fn next_step(id: &str) -> String {
     format!(
-        "Post the url in the chat, then end your turn now so your harness notifies the user that it needs them; don't keep running `agentikeys wait` meanwhile. When the user replies, run `agentikeys wait {id}`."
+        "Post the url in the chat, then get the user's attention: if your harness has a tool for asking the user a question (AskUserQuestion, request_user_input, question), ask with it, the url inside the question, with options Done and Cancel; otherwise end your turn. Don't keep running `agentikeys wait` meanwhile. When the user answers, run `agentikeys wait {id}`."
     )
 }
 
