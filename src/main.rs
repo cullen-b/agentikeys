@@ -103,6 +103,11 @@ enum ConfigSet {
         #[arg(value_enum)]
         via: Via,
     },
+    /// Desktop notification when a key page is ready for you: on or off (default on).
+    Notify {
+        #[arg(value_parser = ["on", "off"])]
+        state: String,
+    },
     /// Minutes a key page stays open before it expires.
     Expiry {
         #[arg(value_parser = clap::value_parser!(u64).range(1..=MAX_EXPIRY_MINUTES))]
@@ -351,6 +356,10 @@ fn request(
     let page = web::Page { spec: &spec, places: &places, phrase: &phrase, phrase_new };
     let outcome = web::serve(&page, server, &exposure, Duration::from_secs(timeout), |url| {
         let opened = via == Via::Local && !no_open && open_browser(url);
+        if configured_notify() {
+            let project = cwd.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            notify(&spec.title, &project);
+        }
         eprintln!(
             "agentikeys: {} {url}",
             if opened {
@@ -514,9 +523,16 @@ fn config(set: Option<ConfigSet>) -> Result<()> {
             let via = configured_via()?;
             println!("via = {} (resolves to {} here)", name(via), name(via.resolve()));
             println!("expiry = {}", describe_minutes(configured_expiry()? / 60));
+            println!("notify = {}", if configured_notify() { "on" } else { "off" });
             println!("config file: {}", path.display());
         }
         Some(ConfigSet::Expiry { minutes }) => set_expiry(minutes)?,
+        Some(ConfigSet::Notify { state }) => {
+            let mut doc = read_config()?;
+            doc["notify"] = toml_edit::value(state == "on");
+            write_config(&doc)?;
+            println!("Notifications when a key page is ready: {state}");
+        }
         Some(ConfigSet::Via { via }) => {
             let mut doc = read_config()?;
             doc["via"] = toml_edit::value(name(via));
@@ -525,6 +541,44 @@ fn config(set: Option<ConfigSet>) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// On unless `notify = false` in the config.
+fn configured_notify() -> bool {
+    read_config().ok().and_then(|d| d.get("notify").and_then(|v| v.as_bool())).unwrap_or(true)
+}
+
+/// Tells the user a page is waiting for them, so a request doesn't sit unseen while the agent looks busy.
+fn notify(title: &str, project: &str) {
+    let heading = "agentikeys: keys needed";
+    let body = if project.is_empty() {
+        format!("{title}. Open the link in your agent's chat.")
+    } else {
+        format!("{title} ({project}). Open the link in your agent's chat.")
+    };
+    let mut cmd = if cfg!(target_os = "macos") {
+        // Text goes in as arguments, never into the script, so a spec title can't inject AppleScript.
+        let mut c = Command::new("osascript");
+        c.args([
+            "-e",
+            "on run argv",
+            "-e",
+            "display notification (item 2 of argv) with title (item 1 of argv) sound name \"Glass\"",
+            "-e",
+            "end run",
+            heading,
+            &body,
+        ]);
+        c
+    } else if cfg!(windows) {
+        return;
+    } else {
+        let mut c = Command::new("notify-send");
+        c.args(["--urgency=critical", heading, &body]);
+        c
+    };
+    cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    let _ = cmd.spawn();
 }
 
 fn name(via: Via) -> &'static str {

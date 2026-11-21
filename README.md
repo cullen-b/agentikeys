@@ -172,6 +172,7 @@ a sandbox. Saving to a secret store rather than a local file leaves less on disk
 | `agentikeys phrase` | Show your security phrase (`--reset` for a new one) |
 | `agentikeys config via <mode>` | Default way pages reach you |
 | `agentikeys config expiry <minutes>` | How long a key page stays open (1 to 1440 minutes) |
+| `agentikeys config notify on\|off` | Desktop notification when a key page is ready for you (default on) |
 
 ## Platforms
 
